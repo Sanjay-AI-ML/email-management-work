@@ -4,6 +4,16 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if (-not (Get-Command javac -CommandType Application -ErrorAction SilentlyContinue)) {
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","User") + ";" + [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + $env:Path
+    if (-not (Get-Command javac -CommandType Application -ErrorAction SilentlyContinue)) {
+        $adoptiumJdk = "$env:LOCALAPPDATA\Programs\Eclipse Adoptium\jdk-17\bin"
+        if (Test-Path $adoptiumJdk) {
+            $env:Path = "$adoptiumJdk;$env:Path"
+        }
+    }
+}
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $classesDirectory = Join-Path $projectRoot 'build/check-classes'
 $sourceDirectories = @(
