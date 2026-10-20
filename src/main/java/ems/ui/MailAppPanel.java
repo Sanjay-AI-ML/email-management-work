@@ -244,7 +244,7 @@ public final class MailAppPanel extends JPanel {
             Account value = service.connectGmail();
             try {
                 service.refresh();
-                return new Connected(value, service.getMessages(Mailbox.INBOX, ""));
+                return new Connected(value, service.getMessages(Mailbox.INBOX, ""), service.getLastWarning());
             } catch (Exception failure) {
                 try { service.disconnect(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
                 throw failure;
@@ -253,7 +253,8 @@ public final class MailAppPanel extends JPanel {
             account = result.account(); connected = true; mailbox = Mailbox.INBOX;
             accountLabel.setText(account.getEmailAddress()); accountLabel.setToolTipText("Account: " + account.getEmailAddress());
             cards.show(pages, "mail"); applyMessages(result.messages());
-            showNotice(demo ? "Demo mailbox open. No Gmail connection is active." : "Gmail connected. Inbox updated.", false);
+            showNotice(withWarning(demo ? "Demo mailbox open. No Gmail connection is active."
+                    : "Gmail connected. Inbox updated.", result.warning()), false);
         }));
         refresh.addActionListener(event -> load(true));
         searchButton.addActionListener(event -> load(false));
@@ -352,7 +353,7 @@ public final class MailAppPanel extends JPanel {
         JTextArea recipients = plainText("To  " + String.join(", ", message.getRecipientEmails()), 12, Font.PLAIN);
         recipients.setForeground(UiTheme.MUTED); article.add(recipients);
         article.add(UiTheme.label(DATE.format(message.getReceivedAt()), Font.PLAIN, 11, UiTheme.MUTED));
-        if (!message.getGmailLabelIds().contains("SENT")) {
+        if (mailbox != Mailbox.SENT) {
             ReaderColumn review = new ReaderColumn(6);
             review.setBackground(result.isSuspectedSpam() ? new Color(0xFFF5DE) : new Color(0xEDF5F2));
             review.setBorder(new EmptyBorder(12, 12, 12, 12));
@@ -372,7 +373,7 @@ public final class MailAppPanel extends JPanel {
         scroll.getVerticalScrollBar().setUnitIncrement(18);
         scroll.getViewport().setBackground(UiTheme.SURFACE); content.add(scroll);
         JPanel actions = UiTheme.panel(new FlowLayout(FlowLayout.LEFT, 6, 0), UiTheme.SURFACE);
-        if (!message.getGmailLabelIds().contains("SENT")) { actions.add(markSpam); actions.add(notSpam); }
+        if (mailbox != Mailbox.SENT) { actions.add(markSpam); actions.add(notSpam); }
         content.add(actions, BorderLayout.SOUTH); reader.add(content); reader.revalidate(); reader.repaint();
     }
 
@@ -383,10 +384,11 @@ public final class MailAppPanel extends JPanel {
         String query = search.getText().strip();
         runTask(spam ? "Marking as spam…" : "Saving correction…", () -> {
             if (spam) service.markAsSpam(id); else service.markAsNotSpam(id);
-            return service.getMessages(currentMailbox, query);
-        }, messages -> {
-            applyMessages(messages);
-            showNotice(spam ? "Marked as spam. Your correction was saved." : "Marked as not spam. Your correction was saved.", false);
+            return new UpdatedMailbox(service.getMessages(currentMailbox, query), service.getLastWarning());
+        }, result -> {
+            applyMessages(result.messages());
+            showNotice(withWarning(spam ? "Marked as spam. Your correction was saved."
+                    : "Marked as not spam. Your correction was saved.", result.warning()), false);
         });
     }
 
@@ -397,10 +399,18 @@ public final class MailAppPanel extends JPanel {
         editor[0] = new ComposePanel(account.getEmailAddress(), demo, draft -> {
             editor[0].setBusy(true);
             runTask(demo ? "Sending demo message…" : "Sending message…",
-                    () -> service.sendMessage(draft.recipientEmail(), draft.subject(), draft.body()), id -> {
+                    () -> new SentMessage(service.sendMessage(draft.recipientEmail(), draft.subject(), draft.body()),
+                            service.getLastWarning()), result -> {
                         dialog.dispose();
-                        showNotice(demo ? "Demo message added to Sent. Nothing was sent to Gmail." : "Message sent successfully.", false);
-                        if (mailbox == Mailbox.SENT) load(false);
+                        String notice = withWarning(demo ? "Demo message added to Sent. Nothing was sent to Gmail."
+                                : "Message sent successfully.", result.warning());
+                        showNotice(notice, false);
+                        if (mailbox == Mailbox.SENT) {
+                            String sentQuery = search.getText().strip();
+                            runTask("Updating Sent…", () -> service.getMessages(Mailbox.SENT, sentQuery),
+                                    messages -> { applyMessages(messages); showNotice(notice, false); },
+                                    error -> showNotice(notice + " " + error, true));
+                        }
                     }, error -> {
                         editor[0].setBusy(false); editor[0].showError(error); showNotice(error, true);
                     });
@@ -439,7 +449,7 @@ public final class MailAppPanel extends JPanel {
             control.setEnabled(connected && !busy);
         }
         boolean canCorrect = connected && !busy && openedMessage != null
-                && !openedMessage.getGmailLabelIds().contains("SENT");
+                && mailbox != Mailbox.SENT;
         markSpam.setEnabled(canCorrect); notSpam.setEnabled(canCorrect);
         setCursor(Cursor.getPredefinedCursor(busy ? Cursor.WAIT_CURSOR : Cursor.DEFAULT_CURSOR));
     }
@@ -488,7 +498,13 @@ public final class MailAppPanel extends JPanel {
         c.gridy = row; panel.add(component, c);
     }
 
-    private record Connected(Account account, List<EmailMessage> messages) { }
+    private static String withWarning(String message, String warning) {
+        return warning == null || warning.isBlank() ? message : message + " " + warning;
+    }
+
+    private record Connected(Account account, List<EmailMessage> messages, String warning) { }
+    private record UpdatedMailbox(List<EmailMessage> messages, String warning) { }
+    private record SentMessage(String id, String warning) { }
     private record Opened(EmailMessage message, SpamResult result, List<EmailMessage> messages) { }
 
     /**

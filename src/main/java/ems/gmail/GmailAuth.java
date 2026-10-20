@@ -1,12 +1,15 @@
 package ems.gmail;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 import ems.exception.AppException;
-
 import java.awt.Desktop;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -14,280 +17,327 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import com.sun.net.httpserver.HttpServer;
+import java.util.concurrent.TimeoutException;
 
-/**
- * Handles Google OAuth 2.0 authorization for Gmail.
- * Supports environment variables, saved refresh tokens, and desktop browser OAuth flow.
- */
-public class GmailAuth {
-
-    private static final String DEFAULT_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth";
-    private static final String DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token";
-    private static final String SCOPES = "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email";
-    private static final int CALLBACK_PORT = 8888;
-    private static final String REDIRECT_URI = "http://localhost:" + CALLBACK_PORT + "/callback";
-    private static final Path TOKEN_STORE = Paths.get(System.getProperty("user.home"), ".email_app_tokens.json");
-
-    private final HttpClient httpClient;
+/** OAuth Authorization Code + PKCE using the system browser and a loopback-only callback. */
+public final class GmailAuth implements AccessTokenProvider {
+    static final String SCOPE = "https://www.googleapis.com/auth/gmail.modify";
+    private static final URI GOOGLE_AUTHORIZE = URI.create("https://accounts.google.com/o/oauth2/v2/auth");
+    private static final URI GOOGLE_TOKEN = URI.create("https://oauth2.googleapis.com/token");
+    private final Path credentialsFile;
+    private final TokenStore store;
+    private final HttpClient http;
+    private final URI authorizeEndpoint;
+    private final URI tokenEndpoint;
+    private final BrowserOpener browser;
+    private final Duration timeout;
+    private String clientId;
+    private String clientSecret;
     private String accessToken;
     private String refreshToken;
-    private Instant tokenExpiry = Instant.EPOCH;
+    private Instant expiresAt = Instant.EPOCH;
+    private boolean ignoreSavedTokens;
 
-    public GmailAuth() {
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+    public GmailAuth(Path credentialsFile, Path tokenDirectory) {
+        this(credentialsFile, tokenDirectory,
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build(),
+                GOOGLE_AUTHORIZE, GOOGLE_TOKEN, GmailAuth::openBrowser, Duration.ofMinutes(3));
     }
 
-    /**
-     * Obtains a valid access token. Reuses cached token, refreshes if expired,
-     * or triggers interactive OAuth.
-     */
-    public synchronized String getValidAccessToken() throws AppException {
-        // 1. Direct environment variable override
-        String envToken = System.getenv("GMAIL_ACCESS_TOKEN");
-        if (envToken != null && !envToken.isBlank()) {
-            return envToken.trim();
-        }
+    GmailAuth(Path credentialsFile, Path tokenDirectory, HttpClient http,
+            URI authorizeEndpoint, URI tokenEndpoint, BrowserOpener browser, Duration timeout) {
+        this.credentialsFile = credentialsFile;
+        this.store = new TokenStore(tokenDirectory);
+        this.http = http;
+        this.authorizeEndpoint = authorizeEndpoint;
+        this.tokenEndpoint = tokenEndpoint;
+        this.browser = browser;
+        this.timeout = timeout;
+    }
 
-        // 2. Already in memory and not expired
-        if (accessToken != null && Instant.now().isBefore(tokenExpiry.minusSeconds(60))) {
-            return accessToken;
-        }
-
-        // 3. Load from disk if available
-        loadSavedTokens();
-        if (accessToken != null && Instant.now().isBefore(tokenExpiry.minusSeconds(60))) {
-            return accessToken;
-        }
-
-        // 4. Attempt refresh with refresh token
-        String clientId = getClientId();
-        String clientSecret = getClientSecret();
-        if (refreshToken != null && !refreshToken.isBlank() && clientId != null && clientSecret != null) {
+    @Override public synchronized void authorize() throws AppException {
+        readCredentials();
+        if (accessToken != null && !expiresAt.isBefore(Instant.now().plusSeconds(60))) return;
+        if (!ignoreSavedTokens && accessToken == null) loadTokens();
+        if (accessToken != null && !expiresAt.isBefore(Instant.now().plusSeconds(60))) return;
+        if (refreshToken != null) {
             try {
-                refreshAccessToken(clientId, clientSecret);
-                return accessToken;
-            } catch (Exception e) {
-                // Refresh failed; fall through to browser login
+                refreshAccessToken();
+                return;
+            } catch (AuthorizationExpired expired) {
+                // Revoked/expired grants require a new explicit authorization in the browser.
             }
         }
+        authorizeInBrowser();
+    }
 
-        // 5. If credentials are fully missing, check if developer test mode is allowed
-        if (clientId == null || clientSecret == null) {
-            String testEmail = System.getenv("GMAIL_TEST_ACCOUNT");
-            if (testEmail != null && !testEmail.isBlank()) {
-                this.accessToken = "dev-mock-token-" + testEmail;
-                this.tokenExpiry = Instant.now().plusSeconds(3600);
-                return this.accessToken;
-            }
-            throw new AppException(
-                    "Google OAuth credentials not configured. Please set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET " +
-                    "in environment variables, or provide GMAIL_ACCESS_TOKEN."
-            );
-        }
-
-        // 6. Interactive browser login
-        performBrowserOAuth(clientId, clientSecret);
+    @Override public synchronized String accessToken() throws AppException {
+        if (accessToken == null) throw new AppException("Connect a Gmail account first.");
+        if (expiresAt.isBefore(Instant.now().plusSeconds(60))) return refreshAccessToken();
         return accessToken;
     }
 
-    public synchronized void clearTokens() {
-        this.accessToken = null;
-        this.refreshToken = null;
-        this.tokenExpiry = Instant.EPOCH;
+    @Override public synchronized String refreshAccessToken() throws AppException {
+        if (refreshToken == null) {
+            forgetTokens();
+            throw new AuthorizationExpired();
+        }
+        Map<String, String> form = clientFields();
+        form.put("grant_type", "refresh_token");
+        form.put("refresh_token", refreshToken);
+        applyTokens(exchangeToken(form));
+        return accessToken;
+    }
+
+    @Override public synchronized void disconnect() { forgetTokens(); }
+
+    private void readCredentials() throws AppException {
+        if (!Files.isRegularFile(credentialsFile)) {
+            throw new AppException("Gmail setup is required. Enable the Gmail API, create a Desktop app "
+                    + "OAuth client in Google Cloud, and save its downloaded JSON as "
+                    + credentialsFile.toAbsolutePath() + ". See README.md for setup steps.");
+        }
         try {
-            Files.deleteIfExists(TOKEN_STORE);
-        } catch (IOException ignored) {
+            JsonObject root = JsonParser.parseString(Files.readString(credentialsFile,
+                    StandardCharsets.UTF_8)).getAsJsonObject();
+            if (!root.has("installed")) {
+                throw new AppException("Use Google OAuth credentials for a Desktop app, not a Web application.");
+            }
+            JsonObject installed = root.getAsJsonObject("installed");
+            clientId = installed.get("client_id").getAsString();
+            clientSecret = installed.has("client_secret") ? installed.get("client_secret").getAsString() : "";
+            if (clientId.isBlank()) throw new IllegalArgumentException("Missing client ID");
+        } catch (AppException e) {
+            throw e;
+        } catch (IOException | RuntimeException e) {
+            throw new AppException("The Gmail credentials file could not be read. Download new Desktop app credentials.", e);
         }
     }
 
-    private void performBrowserOAuth(String clientId, String clientSecret) throws AppException {
-        CompletableFuture<String> authCodeFuture = new CompletableFuture<>();
-        HttpServer server;
+    private void loadTokens() throws AppException {
         try {
-            server = HttpServer.create(new InetSocketAddress(CALLBACK_PORT), 0);
-        } catch (IOException e) {
-            throw new AppException("Failed to start local OAuth callback receiver on port " + CALLBACK_PORT, e);
-        }
-
-        server.createContext("/callback", exchange -> {
-            String query = exchange.getRequestURI().getQuery();
-            String code = null;
-            if (query != null) {
-                for (String param : query.split("&")) {
-                    String[] pair = param.split("=");
-                    if (pair.length == 2 && "code".equals(pair[0])) {
-                        code = pair[1];
-                        break;
-                    }
-                }
-            }
-
-            String response;
-            if (code != null) {
-                authCodeFuture.complete(code);
-                response = "<html><body><h2>Gmail Authorization Successful!</h2><p>You can return to Maildesk now.</p></body></html>";
-            } else {
-                authCodeFuture.completeExceptionally(new AppException("Authorization cancelled or missing code."));
-                response = "<html><body><h2>Authorization Failed</h2><p>Please try again.</p></body></html>";
-            }
-
-            byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(200, bytes.length);
-            try (OutputStream os = exchange.getResponseBody()) {
-                os.write(bytes);
-            }
-        });
-
-        server.start();
-
-        try {
-            String authUrl = DEFAULT_AUTH_URI +
-                    "?client_id=" + URLEncoder.encode(clientId, StandardCharsets.UTF_8) +
-                    "&redirect_uri=" + URLEncoder.encode(REDIRECT_URI, StandardCharsets.UTF_8) +
-                    "&response_type=code" +
-                    "&scope=" + URLEncoder.encode(SCOPES, StandardCharsets.UTF_8) +
-                    "&access_type=offline" +
-                    "&prompt=consent";
-
-            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-                Desktop.getDesktop().browse(URI.create(authUrl));
-            } else {
-                System.out.println("Please open this URL in your browser to authorize Gmail:\n" + authUrl);
-            }
-
-            String authCode = authCodeFuture.get(120, TimeUnit.SECONDS);
-            exchangeCodeForTokens(authCode, clientId, clientSecret);
-
-        } catch (Exception e) {
-            throw new AppException("Google authorization failed or timed out: " + e.getMessage(), e);
-        } finally {
-            server.stop(1);
+            JsonObject data = store.load();
+            if (data == null || !clientId.equals(string(data, "client_id"))) return;
+            accessToken = string(data, "access_token");
+            refreshToken = string(data, "refresh_token");
+            expiresAt = data.has("expires_at") ? Instant.ofEpochMilli(data.get("expires_at").getAsLong())
+                    : Instant.EPOCH;
+        } catch (IOException | RuntimeException e) {
+            throw new AppException("Could not read the protected Gmail sign-in cache. Check permissions on the token directory.", e);
         }
     }
 
-    private void exchangeCodeForTokens(String code, String clientId, String clientSecret) throws AppException {
-        String body = "code=" + URLEncoder.encode(code, StandardCharsets.UTF_8) +
-                "&client_id=" + URLEncoder.encode(clientId, StandardCharsets.UTF_8) +
-                "&client_secret=" + URLEncoder.encode(clientSecret, StandardCharsets.UTF_8) +
-                "&redirect_uri=" + URLEncoder.encode(REDIRECT_URI, StandardCharsets.UTF_8) +
-                "&grant_type=authorization_code";
-
-        executeTokenRequest(body);
-    }
-
-    private void refreshAccessToken(String clientId, String clientSecret) throws AppException {
-        String body = "refresh_token=" + URLEncoder.encode(refreshToken, StandardCharsets.UTF_8) +
-                "&client_id=" + URLEncoder.encode(clientId, StandardCharsets.UTF_8) +
-                "&client_secret=" + URLEncoder.encode(clientSecret, StandardCharsets.UTF_8) +
-                "&grant_type=refresh_token";
-
-        executeTokenRequest(body);
-    }
-
-    private void executeTokenRequest(String formBody) throws AppException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(DEFAULT_TOKEN_URI))
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString(formBody, StandardCharsets.UTF_8))
-                .build();
-
+    private void authorizeInBrowser() throws AppException {
+        HttpServer server = null;
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
-                throw new AppException("Token exchange failed with HTTP " + response.statusCode() + ": " + response.body());
-            }
-
-            Map<String, Object> data = SimpleJson.parseObject(response.body());
-            this.accessToken = SimpleJson.getString(data, "access_token");
-            String newRefresh = SimpleJson.getString(data, "refresh_token");
-            if (newRefresh != null && !newRefresh.isBlank()) {
-                this.refreshToken = newRefresh;
-            }
-
-            long expiresIn = 3600;
-            Object exp = data.get("expires_in");
-            if (exp instanceof Number n) {
-                expiresIn = n.longValue();
-            }
-            this.tokenExpiry = Instant.now().plusSeconds(expiresIn);
-
-            saveTokens();
-
-        } catch (IOException | InterruptedException e) {
+            String state = randomToken();
+            String verifier = randomToken();
+            String challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    MessageDigest.getInstance("SHA-256").digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            URI redirect = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/oauth2callback");
+            CompletableFuture<String> code = new CompletableFuture<>();
+            server.createContext("/oauth2callback", exchange -> handleCallback(exchange, state, code));
+            server.start();
+            Map<String, String> form = new LinkedHashMap<>();
+            form.put("client_id", clientId);
+            form.put("redirect_uri", redirect.toString());
+            form.put("response_type", "code");
+            form.put("scope", SCOPE);
+            form.put("access_type", "offline");
+            form.put("prompt", "consent select_account");
+            form.put("state", state);
+            form.put("code_challenge", challenge);
+            form.put("code_challenge_method", "S256");
+            browser.open(URI.create(authorizeEndpoint + "?" + formEncode(form)));
+            String authCode = code.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            Map<String, String> tokenForm = clientFields();
+            tokenForm.put("grant_type", "authorization_code");
+            tokenForm.put("code", authCode);
+            tokenForm.put("redirect_uri", redirect.toString());
+            tokenForm.put("code_verifier", verifier);
+            applyTokens(exchangeToken(tokenForm));
+        } catch (AppException e) {
+            throw e;
+        } catch (TimeoutException e) {
+            throw new AppException("Google sign-in timed out. Click Connect Gmail and complete sign-in within three minutes.", e);
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof AppException app) throw app;
+            throw new AppException("Google sign-in could not be completed. Please try again.", e);
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new AppException("Failed to communicate with Google OAuth service: " + e.getMessage(), e);
+            throw new AppException("Google sign-in was interrupted.", e);
+        } catch (Exception e) {
+            throw new AppException("Could not open Google sign-in. Check that a default web browser is available "
+                    + "and local loopback connections are allowed.", e);
+        } finally {
+            if (server != null) server.stop(0);
         }
     }
 
-    private void saveTokens() {
+    private static void handleCallback(HttpExchange exchange, String state, CompletableFuture<String> result)
+            throws IOException {
+        int status = 400;
+        String message = "Invalid sign-in response. Return to the application and try again.";
+        String authorizationCode = null;
+        AppException authorizationFailure = null;
         try {
-            StringBuilder sb = new StringBuilder("{");
-            sb.append("\"accessToken\":\"").append(SimpleJson.escapeString(accessToken)).append("\",");
-            sb.append("\"refreshToken\":\"").append(SimpleJson.escapeString(refreshToken)).append("\",");
-            sb.append("\"tokenExpiry\":").append(tokenExpiry.toEpochMilli());
-            sb.append("}");
-            Files.writeString(TOKEN_STORE, sb.toString(), StandardCharsets.UTF_8);
-        } catch (IOException ignored) {
-        }
-    }
-
-    private void loadSavedTokens() {
-        if (!Files.exists(TOKEN_STORE)) return;
-        try {
-            String content = Files.readString(TOKEN_STORE, StandardCharsets.UTF_8);
-            Map<String, Object> data = SimpleJson.parseObject(content);
-            this.accessToken = SimpleJson.getString(data, "accessToken");
-            this.refreshToken = SimpleJson.getString(data, "refreshToken");
-            Object exp = data.get("tokenExpiry");
-            if (exp instanceof Number n) {
-                this.tokenExpiry = Instant.ofEpochMilli(n.longValue());
+            Map<String, String> query = parseQuery(exchange.getRequestURI().getRawQuery());
+            String returnedState = query.getOrDefault("state", "");
+            boolean valid = exchange.getRequestMethod().equals("GET")
+                    && exchange.getRequestURI().getPath().equals("/oauth2callback")
+                    && MessageDigest.isEqual(state.getBytes(StandardCharsets.UTF_8),
+                            returnedState.getBytes(StandardCharsets.UTF_8));
+            if (valid && query.containsKey("error")) {
+                authorizationFailure = new AppException("Google sign-in was cancelled or access was denied.");
+                message = "Sign-in was not completed. You can close this tab and return to the application.";
+            } else if (valid && !query.getOrDefault("code", "").isBlank()) {
+                status = 200;
+                message = "Authorization received. You can close this tab and return to the application.";
+                authorizationCode = query.get("code");
             }
-        } catch (Exception ignored) {
+        } catch (IllegalArgumentException malformedQuery) {
+            // Reject malformed callbacks without revealing query data or cancelling a legitimate response.
+        }
+        byte[] page = ("<!doctype html><html><head><meta charset='utf-8'><title>Gmail connection</title>"
+                + "</head><body><p>" + message + "</p></body></html>").getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        exchange.getResponseHeaders().set("Content-Security-Policy", "default-src 'none'");
+        try {
+            exchange.sendResponseHeaders(status, page.length);
+            try (var output = exchange.getResponseBody()) { output.write(page); }
+        } finally {
+            // Complete only after the browser response is written; otherwise a fast denial
+            // can stop the listener while it is still displaying the return-to-app page.
+            if (authorizationCode != null) result.complete(authorizationCode);
+            else if (authorizationFailure != null) result.completeExceptionally(authorizationFailure);
         }
     }
 
-    private String getClientId() {
-        String id = System.getenv("GMAIL_CLIENT_ID");
-        if (id == null || id.isBlank()) id = System.getenv("GOOGLE_CLIENT_ID");
-        if (id != null && !id.isBlank()) return id.trim();
-        return readFromCredentialsFile("client_id");
-    }
-
-    private String getClientSecret() {
-        String secret = System.getenv("GMAIL_CLIENT_SECRET");
-        if (secret == null || secret.isBlank()) secret = System.getenv("GOOGLE_CLIENT_SECRET");
-        if (secret != null && !secret.isBlank()) return secret.trim();
-        return readFromCredentialsFile("client_secret");
-    }
-
-    private String readFromCredentialsFile(String key) {
-        for (String filename : new String[] {"credentials.json", "client_secret.json", "client_secrets.json"}) {
-            Path p = Paths.get(filename);
-            if (Files.exists(p)) {
-                try {
-                    String content = Files.readString(p, StandardCharsets.UTF_8);
-                    Map<String, Object> root = SimpleJson.parseObject(content);
-                    Map<String, Object> installed = SimpleJson.getObject(root, "installed");
-                    if (installed.isEmpty()) {
-                        installed = SimpleJson.getObject(root, "web");
-                    }
-                    String val = SimpleJson.getString(installed, key);
-                    if (val != null && !val.isBlank()) {
-                        return val.trim();
-                    }
-                } catch (Exception ignored) {
+    private JsonObject exchangeToken(Map<String, String> form) throws AppException {
+        HttpRequest request = HttpRequest.newBuilder(tokenEndpoint).timeout(Duration.ofSeconds(45))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(formEncode(form))).build();
+        try {
+            HttpResponse<String> response = http.send(request,
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                if (response.body().contains("invalid_grant")) {
+                    forgetTokens();
+                    throw new AuthorizationExpired();
                 }
+                throw new AppException("Google could not authorize Gmail (HTTP " + response.statusCode()
+                        + "). Check your OAuth client configuration and test-user access.");
             }
+            return JsonParser.parseString(response.body()).getAsJsonObject();
+        } catch (IOException e) {
+            throw new AppException("Could not reach Google's sign-in server. Check your internet connection.", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AppException("Google sign-in was interrupted.", e);
+        } catch (RuntimeException e) {
+            throw new AppException("Google returned an unreadable sign-in response.", e);
         }
-        return null;
+    }
+
+    private void applyTokens(JsonObject data) throws AppException {
+        try {
+            String newToken = string(data, "access_token");
+            if (newToken == null || newToken.isBlank()) throw new IllegalArgumentException("Missing token");
+            if (data.has("scope") && !java.util.Arrays.asList(data.get("scope").getAsString().split(" "))
+                    .contains(SCOPE)) {
+                throw new AppException("Gmail permission was not granted. Connect again and allow Gmail access.");
+            }
+            accessToken = newToken;
+            String newRefresh = string(data, "refresh_token");
+            if (newRefresh != null && !newRefresh.isBlank()) refreshToken = newRefresh;
+            long expires = data.has("expires_in") ? data.get("expires_in").getAsLong() : 3600;
+            expiresAt = Instant.now().plusSeconds(Math.max(1, expires));
+            JsonObject cache = new JsonObject();
+            cache.addProperty("client_id", clientId);
+            cache.addProperty("access_token", accessToken);
+            if (refreshToken != null) cache.addProperty("refresh_token", refreshToken);
+            cache.addProperty("expires_at", expiresAt.toEpochMilli());
+            store.save(cache);
+            ignoreSavedTokens = false;
+        } catch (AppException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new AppException("Gmail authorized, but the protected sign-in cache could not be saved. "
+                    + "Check permissions on the token directory.", e);
+        } catch (RuntimeException e) {
+            throw new AppException("Google returned incomplete sign-in credentials. Connect again.", e);
+        }
+    }
+
+    private Map<String, String> clientFields() {
+        Map<String, String> form = new LinkedHashMap<>();
+        form.put("client_id", clientId);
+        if (clientSecret != null && !clientSecret.isBlank()) form.put("client_secret", clientSecret);
+        return form;
+    }
+
+    private void forgetTokens() {
+        accessToken = null;
+        refreshToken = null;
+        expiresAt = Instant.EPOCH;
+        ignoreSavedTokens = true;
+        try { store.clear(); } catch (IOException ignored) {
+            // The current process will never reuse a cache after disconnect, even if deletion fails.
+        }
+    }
+
+    static Map<String, String> parseQuery(String query) {
+        Map<String, String> values = new LinkedHashMap<>();
+        if (query == null || query.isEmpty()) return values;
+        for (String pair : query.split("&")) {
+            String[] parts = pair.split("=", 2);
+            String key = URLDecoder.decode(parts[0], StandardCharsets.UTF_8);
+            String value = URLDecoder.decode(parts.length == 2 ? parts[1] : "", StandardCharsets.UTF_8);
+            if (values.putIfAbsent(key, value) != null) throw new IllegalArgumentException("Duplicate parameter");
+        }
+        return values;
+    }
+
+    static String formEncode(Map<String, String> form) {
+        return form.entrySet().stream().map(entry -> URLEncoder.encode(entry.getKey(), StandardCharsets.UTF_8)
+                + "=" + URLEncoder.encode(entry.getValue(), StandardCharsets.UTF_8))
+                .collect(java.util.stream.Collectors.joining("&"));
+    }
+
+    private static String string(JsonObject object, String key) {
+        return object.has(key) && !object.get(key).isJsonNull() ? object.get(key).getAsString() : null;
+    }
+
+    private static String randomToken() {
+        byte[] bytes = new byte[32];
+        new SecureRandom().nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private static void openBrowser(URI uri) throws IOException {
+        if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+            throw new IOException("No default browser is available.");
+        }
+        Desktop.getDesktop().browse(uri);
+    }
+
+    @FunctionalInterface
+    interface BrowserOpener { void open(URI uri) throws Exception; }
+
+    private static final class AuthorizationExpired extends AppException {
+        private static final long serialVersionUID = 1L;
+        private AuthorizationExpired() { super("Gmail authorization expired or was revoked. Connect Gmail again."); }
     }
 }

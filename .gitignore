@@ -3,6 +3,8 @@
 /build/
 /out/
 /target/
+/.tools/
+dependency-reduced-pom.xml
 *.log
 hs_err_pid*
 replay_pid*
@@ -16,6 +18,9 @@ replay_pid*
 
 # Google OAuth credentials and saved authorization tokens
 credentials.json
+client_secret.json
+client_secrets.json
+.email_app_tokens.json
 client_secret_*.json
 token.json
 tokens.json
@@ -29,6 +34,10 @@ tokens/
 database.properties
 !database.properties.example
 /config/local.properties
+/config/app.properties
+/config/credentials.json
+/config/client_secret*.json
+/config/tokens/
 
 # Private email caches and exports; use fictional fixtures in source control
 /data/private/

@@ -83,8 +83,8 @@ public final class MemberTwoChecks {
         check(Integer.valueOf(42).equals(((Number) parsed.get("count")).intValue()), "Parsed number should match.");
     }
 
-    private static void testServiceDisconnectSafety() {
-        EmailService service = new GmailEmailService();
+    private static void testServiceDisconnectSafety() throws AppException {
+        EmailService service = GmailEmailService.createDefault();
 
         expectAppException(() -> service.getMessages(Mailbox.INBOX, ""),
                 "Calls before connecting must fail with AppException.");

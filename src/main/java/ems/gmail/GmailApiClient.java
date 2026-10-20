@@ -1,301 +1,214 @@
 package ems.gmail;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import ems.exception.AppException;
 import ems.model.EmailMessage;
-
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 
-/**
- * Standard HTTP REST client for Google's Gmail API v1.
- * Uses Java 17 standard HttpClient with no third-party libraries.
- */
-public class GmailApiClient {
+/** Gmail REST client using an OAuth desktop session and standards-compliant MIME messages. */
+public final class GmailApiClient implements GmailGateway {
+    private static final URI GOOGLE_API = URI.create("https://gmail.googleapis.com/gmail/v1/users/me/");
+    private static final Gson JSON = new Gson();
+    private final URI baseUri;
+    private final HttpClient http;
+    private final AccessTokenProvider tokens;
 
-    private static final String GMAIL_BASE_URI = "https://gmail.googleapis.com/gmail/v1/users/me/";
-
-    private final HttpClient httpClient;
-
-    public GmailApiClient() {
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+    public GmailApiClient(Path credentialsFile, Path tokenDirectory) {
+        this(GOOGLE_API, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build(),
+                new GmailAuth(credentialsFile, tokenDirectory));
     }
 
-    /**
-     * Retrieves the connected account's email address from Google.
-     */
-    public String getUserEmailAddress(String accessToken) throws AppException {
-        String url = GMAIL_BASE_URI + "profile";
-        Map<String, Object> response = getJson(url, accessToken);
-        String email = SimpleJson.getString(response, "emailAddress");
-        if (email == null || email.isBlank()) {
-            throw new AppException("Failed to retrieve user email address from Gmail profile.");
+    /** The injected endpoint and token provider support deterministic local HTTP tests. */
+    public GmailApiClient(URI baseUri, HttpClient http, AccessTokenProvider tokens) {
+        if (!baseUri.toString().endsWith("/")) {
+            throw new IllegalArgumentException("Gmail API base URI must end with '/'.");
         }
-        return email;
+        this.baseUri = baseUri;
+        this.http = http;
+        this.tokens = tokens;
     }
 
-    /**
-     * Lists recent message IDs in the mailbox.
-     */
-    public List<String> listMessageIds(String accessToken, int maxResults) throws AppException {
-        String url = GMAIL_BASE_URI + "messages?maxResults=" + Math.max(1, Math.min(maxResults, 100));
-        Map<String, Object> response = getJson(url, accessToken);
-        List<Object> rawList = SimpleJson.getList(response, "messages");
-        List<String> messageIds = new ArrayList<>();
-        for (Object item : rawList) {
-            if (item instanceof Map<?, ?> map) {
-                Object id = map.get("id");
-                if (id != null) {
-                    messageIds.add(id.toString());
+    @Override public String connect() throws AppException {
+        tokens.authorize();
+        JsonObject profile = request("GET", "profile", null);
+        return requiredString(profile, "emailAddress");
+    }
+
+    @Override public List<EmailMessage> fetchMessages(long accountId) throws AppException {
+        Set<String> ids = new LinkedHashSet<>();
+        Set<String> pageTokens = new HashSet<>();
+        String pageToken = "";
+        do {
+            String path = "messages?maxResults=500&includeSpamTrash=true&q="
+                    + encode("-in:trash -in:drafts");
+            if (!pageToken.isEmpty()) path += "&pageToken=" + encode(pageToken);
+            JsonObject page = request("GET", path, null);
+            try {
+                if (page.has("messages")) {
+                    for (var value : page.getAsJsonArray("messages")) {
+                        ids.add(requiredString(value.getAsJsonObject(), "id"));
+                    }
                 }
+                pageToken = page.has("nextPageToken") ? requiredString(page, "nextPageToken") : "";
+            } catch (RuntimeException malformedPage) {
+                throw new AppException("Gmail returned an unreadable mailbox page. Please refresh again.", malformedPage);
+            }
+            if (!pageToken.isEmpty() && !pageTokens.add(pageToken)) {
+                throw new AppException("Gmail repeated a mailbox page. Please refresh again.");
+            }
+        } while (!pageToken.isEmpty());
+        List<EmailMessage> result = new ArrayList<>();
+        for (String id : ids) {
+            try {
+                result.add(getMessage(accountId, id));
+            } catch (MessageUnavailableException deletedDuringSync) {
+                // A message can disappear between the list and get calls.
             }
         }
-        return messageIds;
+        return result;
     }
 
-    /**
-     * Retrieves full email message content and metadata by Gmail message ID.
-     */
-    public EmailMessage fetchMessage(String accessToken, long accountId, String gmailMessageId) throws AppException {
-        String url = GMAIL_BASE_URI + "messages/" + gmailMessageId + "?format=full";
-        Map<String, Object> data = getJson(url, accessToken);
-
-        // Parse labels
+    @Override public EmailMessage getMessage(long accountId, String id) throws AppException {
+        JsonObject message = request("GET", "messages/" + messageId(id) + "?format=raw", null);
         Set<String> labels = new HashSet<>();
-        List<Object> rawLabels = SimpleJson.getList(data, "labelIds");
-        for (Object l : rawLabels) {
-            if (l != null) labels.add(l.toString());
-        }
-
-        // Parse internal timestamp
-        Instant receivedAt = Instant.now();
-        Object internalDateObj = data.get("internalDate");
-        if (internalDateObj instanceof Number n) {
-            receivedAt = Instant.ofEpochMilli(n.longValue());
-        } else if (internalDateObj instanceof String s) {
-            try {
-                receivedAt = Instant.ofEpochMilli(Long.parseLong(s));
-            } catch (NumberFormatException ignored) {
-            }
-        }
-
-        // Parse payload headers & body
-        Map<String, Object> payload = SimpleJson.getObject(data, "payload");
-        List<Object> headersList = SimpleJson.getList(payload, "headers");
-
-        String sender = "";
-        String subject = "";
-        List<String> recipients = new ArrayList<>();
-
-        for (Object h : headersList) {
-            if (h instanceof Map<?, ?> headerMap) {
-                String name = SimpleJson.getStringOrDefault((Map<String, Object>) headerMap, "name", "");
-                String value = SimpleJson.getStringOrDefault((Map<String, Object>) headerMap, "value", "");
-                if ("From".equalsIgnoreCase(name)) {
-                    sender = extractEmailAddress(value);
-                } else if ("Subject".equalsIgnoreCase(name)) {
-                    subject = value;
-                } else if ("To".equalsIgnoreCase(name) || "Cc".equalsIgnoreCase(name)) {
-                    for (String part : value.split(",")) {
-                        String clean = extractEmailAddress(part);
-                        if (!clean.isBlank()) recipients.add(clean);
-                    }
-                }
-            }
-        }
-
-        if (sender.isBlank()) {
-            sender = "unknown@sender.com";
-        }
-        if (recipients.isEmpty()) {
-            recipients.add("me");
-        }
-
-        String body = extractBodyText(payload);
-        if (body.isBlank()) {
-            String snippet = SimpleJson.getString(data, "snippet");
-            body = (snippet != null) ? snippet : "";
-        }
-
-        return new EmailMessage(
-                accountId,
-                gmailMessageId,
-                sender,
-                recipients,
-                subject,
-                body,
-                receivedAt,
-                labels
-        );
-    }
-
-    /**
-     * Sends an email via Gmail API and returns the created message ID.
-     */
-    public String sendMessage(String accessToken, String from, String recipientEmail, String subject, String bodyText)
-            throws AppException {
-        String rawRfc2822 = "From: " + from + "\r\n" +
-                "To: " + recipientEmail + "\r\n" +
-                "Subject: " + subject + "\r\n" +
-                "Date: " + DateTimeFormatter.RFC_1123_DATE_TIME.format(java.time.ZonedDateTime.now()) + "\r\n" +
-                "Content-Type: text/plain; charset=UTF-8\r\n\r\n" +
-                bodyText;
-
-        String encodedRaw = Base64.getUrlEncoder().withoutPadding().encodeToString(rawRfc2822.getBytes(StandardCharsets.UTF_8));
-        String jsonPayload = "{\"raw\":\"" + SimpleJson.escapeString(encodedRaw) + "\"}";
-
-        String url = GMAIL_BASE_URI + "messages/send";
-        Map<String, Object> result = postJson(url, jsonPayload, accessToken);
-        String newId = SimpleJson.getString(result, "id");
-        if (newId == null || newId.isBlank()) {
-            throw new AppException("Gmail did not return a valid message ID after sending.");
-        }
-        return newId;
-    }
-
-    /**
-     * Removes the UNREAD label in Gmail.
-     */
-    public void markAsRead(String accessToken, String gmailMessageId) throws AppException {
-        String url = GMAIL_BASE_URI + "messages/" + gmailMessageId + "/modify";
-        String body = "{\"removeLabelIds\":[\"UNREAD\"]}";
-        postJson(url, body, accessToken);
-    }
-
-    /**
-     * Adds the SPAM label and removes INBOX in Gmail.
-     */
-    public void markAsSpam(String accessToken, String gmailMessageId) throws AppException {
-        String url = GMAIL_BASE_URI + "messages/" + gmailMessageId + "/modify";
-        String body = "{\"addLabelIds\":[\"SPAM\"],\"removeLabelIds\":[\"INBOX\"]}";
-        postJson(url, body, accessToken);
-    }
-
-    /**
-     * Removes the SPAM label and restores INBOX in Gmail.
-     */
-    public void markAsNotSpam(String accessToken, String gmailMessageId) throws AppException {
-        String url = GMAIL_BASE_URI + "messages/" + gmailMessageId + "/modify";
-        String body = "{\"removeLabelIds\":[\"SPAM\"],\"addLabelIds\":[\"INBOX\"]}";
-        postJson(url, body, accessToken);
-    }
-
-    private String extractBodyText(Map<String, Object> payload) {
-        if (payload == null) return "";
-
-        // Direct body data
-        Map<String, Object> bodyMap = SimpleJson.getObject(payload, "body");
-        String data = SimpleJson.getString(bodyMap, "data");
-        if (data != null && !data.isBlank()) {
-            return decodeBase64(data);
-        }
-
-        // Search recursively inside parts
-        List<Object> parts = SimpleJson.getList(payload, "parts");
-        for (Object p : parts) {
-            if (p instanceof Map<?, ?> partMap) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> part = (Map<String, Object>) partMap;
-                String mimeType = SimpleJson.getString(part, "mimeType");
-                if ("text/plain".equalsIgnoreCase(mimeType)) {
-                    Map<String, Object> pBody = SimpleJson.getObject(part, "body");
-                    String pData = SimpleJson.getString(pBody, "data");
-                    if (pData != null && !pData.isBlank()) {
-                        return decodeBase64(pData);
-                    }
-                }
-            }
-        }
-
-        // Fallback to any text part
-        for (Object p : parts) {
-            if (p instanceof Map<?, ?> partMap) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> part = (Map<String, Object>) partMap;
-                String nested = extractBodyText(part);
-                if (!nested.isBlank()) return nested;
-            }
-        }
-
-        return "";
-    }
-
-    private String decodeBase64(String base64Url) {
         try {
-            byte[] bytes = Base64.getUrlDecoder().decode(base64Url.trim());
-            return new String(bytes, StandardCharsets.UTF_8);
-        } catch (IllegalArgumentException e) {
-            try {
-                byte[] bytes = Base64.getDecoder().decode(base64Url.trim());
-                return new String(bytes, StandardCharsets.UTF_8);
-            } catch (Exception ignored) {
-                return "";
+            if (message.has("labelIds")) {
+                for (var label : message.getAsJsonArray("labelIds")) labels.add(label.getAsString());
+            }
+        } catch (RuntimeException malformedLabels) {
+            throw new AppException("Gmail returned unreadable message labels. Please refresh again.", malformedLabels);
+        }
+        String raw = requiredString(message, "raw");
+        Instant received = null;
+        if (message.has("internalDate")) {
+            try { received = Instant.ofEpochMilli(message.get("internalDate").getAsLong()); }
+            catch (RuntimeException invalidDate) {
+                throw new AppException("Gmail returned an invalid message date.", invalidDate);
             }
         }
+        return MimeMessages.parse(accountId, id, raw, received, labels);
     }
 
-    private String extractEmailAddress(String header) {
-        if (header == null) return "";
-        int start = header.indexOf('<');
-        int end = header.indexOf('>');
-        if (start != -1 && end != -1 && end > start) {
-            return header.substring(start + 1, end).trim();
-        }
-        return header.trim();
-    }
-
-    private Map<String, Object> getJson(String url, String accessToken) throws AppException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Authorization", "Bearer " + accessToken)
-                .header("Accept", "application/json")
-                .GET()
-                .build();
-
-        return execute(request);
-    }
-
-    private Map<String, Object> postJson(String url, String jsonBody, String accessToken) throws AppException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Authorization", "Bearer " + accessToken)
-                .header("Content-Type", "application/json; charset=UTF-8")
-                .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
-                .build();
-
-        return execute(request);
-    }
-
-    private Map<String, Object> execute(HttpRequest request) throws AppException {
+    @Override public String sendMessage(String senderEmail, String recipientEmail, String subject,
+            String body) throws AppException {
+        JsonObject message = new JsonObject();
+        message.addProperty("raw", MimeMessages.compose(senderEmail, recipientEmail, subject, body));
+        JsonObject response = request("POST", "messages/send", message);
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            int code = response.statusCode();
-            if (code >= 200 && code < 300) {
-                return SimpleJson.parseObject(response.body());
-            } else if (code == 401) {
-                throw new AppException("Gmail authorization has expired. Please reconnect.");
-            } else {
-                throw new AppException("Gmail API error (HTTP " + code + "): " + response.body());
-            }
-        } catch (IOException | InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new AppException("Failed to communicate with Gmail service: " + e.getMessage(), e);
+            return requiredString(response, "id");
+        } catch (AppException incompleteSendResponse) {
+            throw new AppException("Gmail accepted the send request but returned no message ID. "
+                    + "Check Sent before sending again.");
         }
+    }
+
+    @Override public void setRead(String id) throws AppException {
+        modify(id, Set.of(), Set.of("UNREAD"));
+    }
+
+    @Override public void setSpam(String id, boolean spam) throws AppException {
+        modify(id, spam ? Set.of("SPAM") : Set.of("INBOX"),
+                spam ? Set.of("INBOX") : Set.of("SPAM"));
+    }
+
+    private void modify(String id, Set<String> add, Set<String> remove) throws AppException {
+        JsonObject body = new JsonObject();
+        body.add("addLabelIds", JSON.toJsonTree(add));
+        body.add("removeLabelIds", JSON.toJsonTree(remove));
+        request("POST", "messages/" + messageId(id) + "/modify", body);
+    }
+
+    @Override public void disconnect() { tokens.disconnect(); }
+
+    private JsonObject request(String method, String path, JsonObject body) throws AppException {
+        boolean sending = "POST".equals(method) && path.equals("messages/send");
+        for (int attempt = 0; attempt < 2; attempt++) {
+            String token = attempt == 0 ? tokens.accessToken() : tokens.refreshAccessToken();
+            HttpRequest.Builder builder = HttpRequest.newBuilder(baseUri.resolve(path))
+                    .timeout(Duration.ofSeconds(60))
+                    .header("Authorization", "Bearer " + token)
+                    .header("Accept", "application/json");
+            if (body == null) builder.GET();
+            else builder.header("Content-Type", "application/json; charset=UTF-8")
+                    .method(method, HttpRequest.BodyPublishers.ofString(JSON.toJson(body)));
+            try {
+                HttpResponse<String> response = http.send(builder.build(),
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                int status = response.statusCode();
+                if (status == 401 && attempt == 0) continue;
+                if (status < 200 || status >= 300) {
+                    if (sending && status >= 500) {
+                        throw new AppException("Could not confirm delivery. Check Gmail Sent before retrying.");
+                    }
+                    throw apiFailure(status);
+                }
+                if (response.body().isBlank()) return new JsonObject();
+                return JsonParser.parseString(response.body()).getAsJsonObject();
+            } catch (IOException e) {
+                throw new AppException(sending
+                        ? "Could not confirm delivery. Check Gmail Sent before retrying."
+                        : "Could not reach Gmail. Check your internet connection and try again.", e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AppException(sending
+                        ? "Could not confirm delivery. Check Gmail Sent before retrying."
+                        : "The Gmail operation was interrupted.", e);
+            } catch (RuntimeException e) {
+                throw new AppException(sending
+                        ? "Could not confirm delivery. Check Gmail Sent before retrying."
+                        : "Gmail returned an unreadable response. Please try again.", e);
+            }
+        }
+        throw new AppException("Gmail authorization expired. Disconnect and connect again.");
+    }
+
+    private static AppException apiFailure(int status) {
+        return switch (status) {
+            case 401 -> new AppException("Gmail authorization expired. Disconnect and connect again.");
+            case 403 -> new AppException("Gmail denied access. Enable the Gmail API in your Google Cloud "
+                    + "project, add your account as a test user, and grant Gmail permissions when connecting.");
+            case 404 -> new MessageUnavailableException();
+            case 429 -> new AppException("Gmail's request limit was reached. Wait a moment and refresh again.");
+            default -> new AppException("Gmail could not complete the request (HTTP " + status + "). Please try again.");
+        };
+    }
+
+    private static String messageId(String id) throws AppException {
+        if (id == null || !id.matches("[A-Za-z0-9_-]+")) throw new AppException("Invalid Gmail message ID.");
+        return id;
+    }
+
+    private static String encode(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private static String requiredString(JsonObject object, String key) throws AppException {
+        if (!object.has(key) || !object.get(key).isJsonPrimitive()
+                || !object.get(key).getAsJsonPrimitive().isString()
+                || object.get(key).getAsString().isBlank()) {
+            throw new AppException("Gmail returned an incomplete response. Please refresh again.");
+        }
+        return object.get(key).getAsString();
+    }
+
+    private static final class MessageUnavailableException extends AppException {
+        private static final long serialVersionUID = 1L;
+        private MessageUnavailableException() { super("This message is no longer available in Gmail. Refresh the mailbox."); }
     }
 }
