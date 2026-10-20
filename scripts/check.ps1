@@ -33,7 +33,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Java check compilation failed (exit code $LASTEXITCODE)."
 }
 
-foreach ($checkClass in @('ems.check.MemberOneChecks', 'ems.check.UiChecks')) {
+foreach ($checkClass in @('ems.check.MemberOneChecks', 'ems.check.MemberTwoChecks', 'ems.check.UiChecks')) {
     & $javaRuntime.Source '-Djava.awt.headless=true' -cp $classesDirectory $checkClass
     if ($LASTEXITCODE -ne 0) {
         throw "Headless checks failed in $checkClass (exit code $LASTEXITCODE)."
