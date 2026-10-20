@@ -55,7 +55,7 @@ production service, rather than independently configured team implementations.
 
 ## Verified scope
 
-On the integrated branch: 55 JUnit tests passed with zero failures/errors/skips,
+On the integrated branch: 59 JUnit tests passed with zero failures/errors/skips,
 including the configured real MySQL server. The contract/interface checks passed
 53 + 29 + 40 assertions. Gmail/OAuth behavior is exercised with local HTTP
 fixtures; no real message is sent by automated verification.

@@ -28,6 +28,7 @@ public final class GmailApiClient implements GmailGateway {
     private final URI baseUri;
     private final HttpClient http;
     private final AccessTokenProvider tokens;
+    private final RetryDelay retryDelay;
 
     public GmailApiClient(Path credentialsFile, Path tokenDirectory) {
         this(GOOGLE_API, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build(),
@@ -36,12 +37,17 @@ public final class GmailApiClient implements GmailGateway {
 
     /** The injected endpoint and token provider support deterministic local HTTP tests. */
     public GmailApiClient(URI baseUri, HttpClient http, AccessTokenProvider tokens) {
+        this(baseUri, http, tokens, Thread::sleep);
+    }
+
+    GmailApiClient(URI baseUri, HttpClient http, AccessTokenProvider tokens, RetryDelay retryDelay) {
         if (!baseUri.toString().endsWith("/")) {
             throw new IllegalArgumentException("Gmail API base URI must end with '/'.");
         }
         this.baseUri = baseUri;
         this.http = http;
         this.tokens = tokens;
+        this.retryDelay = retryDelay;
     }
 
     @Override public String connect() throws AppException {
@@ -138,8 +144,10 @@ public final class GmailApiClient implements GmailGateway {
 
     private JsonObject request(String method, String path, JsonObject body) throws AppException {
         boolean sending = "POST".equals(method) && path.equals("messages/send");
-        for (int attempt = 0; attempt < 2; attempt++) {
-            String token = attempt == 0 ? tokens.accessToken() : tokens.refreshAccessToken();
+        boolean refreshed = false;
+        int retries = 0;
+        while (true) {
+            String token = tokens.accessToken();
             HttpRequest.Builder builder = HttpRequest.newBuilder(baseUri.resolve(path))
                     .timeout(Duration.ofSeconds(60))
                     .header("Authorization", "Bearer " + token)
@@ -151,12 +159,21 @@ public final class GmailApiClient implements GmailGateway {
                 HttpResponse<String> response = http.send(builder.build(),
                         HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
                 int status = response.statusCode();
-                if (status == 401 && attempt == 0) continue;
+                if (status == 401 && !refreshed) {
+                    tokens.refreshAccessToken();
+                    refreshed = true;
+                    continue;
+                }
                 if (status < 200 || status >= 300) {
+                    Set<String> reasons = errorReasons(response.body());
+                    if (method.equals("GET") && retries < 6 && transientFailure(status, reasons)) {
+                        retryDelay.pause(1000L << retries++);
+                        continue;
+                    }
                     if (sending && status >= 500) {
                         throw new AppException("Could not confirm delivery. Check Gmail Sent before retrying.");
                     }
-                    throw apiFailure(status);
+                    throw apiFailure(status, reasons);
                 }
                 if (response.body().isBlank()) return new JsonObject();
                 return JsonParser.parseString(response.body()).getAsJsonObject();
@@ -175,10 +192,51 @@ public final class GmailApiClient implements GmailGateway {
                         : "Gmail returned an unreadable response. Please try again.", e);
             }
         }
-        throw new AppException("Gmail authorization expired. Disconnect and connect again.");
     }
 
-    private static AppException apiFailure(int status) {
+    private static boolean transientFailure(int status, Set<String> reasons) {
+        return status == 429 || status == 500 || status == 502 || status == 503 || status == 504
+                || status == 403 && (reasons.contains("rateLimitExceeded")
+                || reasons.contains("userRateLimitExceeded"));
+    }
+
+    /** Read only machine error codes; never echo Google's response or account details. */
+    private static Set<String> errorReasons(String body) {
+        Set<String> result = new HashSet<>();
+        try {
+            JsonObject error = JsonParser.parseString(body).getAsJsonObject().getAsJsonObject("error");
+            for (String field : List.of("errors", "details")) {
+                if (error != null && error.has(field) && error.get(field).isJsonArray()) {
+                    for (var item : error.getAsJsonArray(field)) {
+                        if (item.isJsonObject() && item.getAsJsonObject().has("reason")) {
+                            result.add(item.getAsJsonObject().get("reason").getAsString());
+                        }
+                    }
+                }
+            }
+        } catch (RuntimeException ignored) { /* Fall back to a safe HTTP-status explanation. */ }
+        return result;
+    }
+
+    private static AppException apiFailure(int status, Set<String> reasons) {
+        if (status == 403) {
+            if (reasons.contains("dailyLimitExceeded") || reasons.contains("quotaExceeded")) {
+                return new AppException("The Google Cloud project's Gmail API quota is exhausted. "
+                        + "Check Gmail API quotas in Google Cloud or wait for the quota to reset.");
+            }
+            if (transientFailure(status, reasons)) {
+                return new AppException("Gmail temporarily limited requests. Your sign-in is still valid. "
+                        + "Wait a moment, then click Refresh.");
+            }
+            if (reasons.contains("domainPolicy")) {
+                return new AppException("Your Google Workspace administrator blocks Gmail access for this app. "
+                        + "Ask your administrator to allow it.");
+            }
+            if (reasons.contains("insufficientPermissions") || reasons.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT")) {
+                return new AppException("The Google sign-in did not grant the required Gmail permission. "
+                        + "Disconnect, connect again, and allow Maildesk to manage Gmail.");
+            }
+        }
         return switch (status) {
             case 401 -> new AppException("Gmail authorization expired. Disconnect and connect again.");
             case 403 -> new AppException("Gmail denied access. Enable the Gmail API in your Google Cloud "
@@ -188,6 +246,8 @@ public final class GmailApiClient implements GmailGateway {
             default -> new AppException("Gmail could not complete the request (HTTP " + status + "). Please try again.");
         };
     }
+
+    @FunctionalInterface interface RetryDelay { void pause(long milliseconds) throws InterruptedException; }
 
     private static String messageId(String id) throws AppException {
         if (id == null || !id.matches("[A-Za-z0-9_-]+")) throw new AppException("Invalid Gmail message ID.");

@@ -40,7 +40,7 @@ not include a usable Google OAuth client or a pre-authorized Gmail account.
 
 ## Automated verification
 
-The combined suite passed 55 JUnit tests with no failures, errors, or skips,
+The combined suite passed 59 JUnit tests with no failures, errors, or skips,
 plus 53 Member 1 contract/demo, 29 Member 2 contract, and 40 Swing assertions. This run
 included the actual configured MySQL server; the setup check also connected
 and initialized its schema successfully.
