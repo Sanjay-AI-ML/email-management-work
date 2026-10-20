@@ -3,6 +3,8 @@
 /build/
 /out/
 /target/
+/.tools/
+dependency-reduced-pom.xml
 *.log
 hs_err_pid*
 replay_pid*
@@ -29,6 +31,10 @@ tokens/
 database.properties
 !database.properties.example
 /config/local.properties
+/config/app.properties
+/config/credentials.json
+/config/client_secret*.json
+/config/tokens/
 
 # Private email caches and exports; use fictional fixtures in source control
 /data/private/

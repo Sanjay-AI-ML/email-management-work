@@ -1,39 +1,20 @@
-
 package com.emailapp.database;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
+import ems.storage.JdbcMailStore;
 import java.sql.SQLException;
-import java.util.Locale;
 
-public class BlockedSenderRepository {
-
-    public boolean isBlocked(long accountId, String senderEmail)
-            throws SQLException {
-
-        String sql = """
-                SELECT 1
-                FROM blocked_senders
-                WHERE account_id = ?
-                  AND LOWER(sender_email) = ?
-                LIMIT 1
-                """;
-
-        try (Connection connection =
-                     DatabaseConnection.getConnection();
-             PreparedStatement statement =
-                     connection.prepareStatement(sql)) {
-
-            statement.setLong(1, accountId);
-            statement.setString(
-                    2,
-                    senderEmail.trim().toLowerCase(Locale.ROOT)
-            );
-
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next();
-            }
-        }
+/** Account-scoped sender blocks used by the local classifier. */
+public final class BlockedSenderRepository {
+    private final JdbcMailStore store;
+    public BlockedSenderRepository() { this(new JdbcMailStore()); }
+    public BlockedSenderRepository(JdbcMailStore store) { this.store = store; }
+    public boolean isBlocked(long accountId, String senderEmail) throws SQLException {
+        return store.isSenderBlocked(accountId, senderEmail);
+    }
+    public void block(long accountId, String senderEmail) throws SQLException {
+        store.setSenderBlocked(accountId, senderEmail, true);
+    }
+    public void unblock(long accountId, String senderEmail) throws SQLException {
+        store.setSenderBlocked(accountId, senderEmail, false);
     }
 }

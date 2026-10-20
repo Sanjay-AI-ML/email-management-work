@@ -51,4 +51,7 @@ public interface EmailService {
 
     /** Removes Gmail's spam classification and persists the user's correction locally. */
     void markAsNotSpam(String gmailMessageId) throws AppException;
+
+    /** Non-sensitive notice for a successful operation with a recoverable cache issue. */
+    default String getLastWarning() { return ""; }
 }

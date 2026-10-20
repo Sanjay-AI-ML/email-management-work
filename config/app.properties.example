@@ -1,0 +1,9 @@
+# Copy to config/app.properties. This file contains examples, never actual secrets.
+# Environment variables override the corresponding properties.
+db.url=jdbc:mysql://localhost:3306/email_management?createDatabaseIfNotExist=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&connectTimeout=5000&socketTimeout=15000
+db.user=root
+db.password=CHANGE_ME
+
+# Download a Desktop OAuth client JSON for your Google Cloud project here.
+gmail.credentials=config/credentials.json
+gmail.tokenDir=config/tokens
