@@ -29,3 +29,19 @@ jobs:
           name: maildesk-${{ runner.os }}
           path: target/maildesk.jar
           if-no-files-found: error
+      - name: Package Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -NoBuild -JdkPath $env:JAVA_HOME
+      - name: Check Windows launcher
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $launcher = Start-Process -FilePath (Resolve-Path 'package/Maildesk/Maildesk.exe') -ArgumentList '--help' -WindowStyle Hidden -Wait -PassThru
+          if ($launcher.ExitCode -ne 0) { throw 'The packaged Windows launcher failed.' }
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: Maildesk-Windows-x64
+          path: package/Maildesk-Windows-x64.zip
+          if-no-files-found: error

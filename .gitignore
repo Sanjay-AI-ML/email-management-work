@@ -3,6 +3,7 @@
 /build/
 /out/
 /target/
+/package/
 /.tools/
 dependency-reduced-pom.xml
 *.log
