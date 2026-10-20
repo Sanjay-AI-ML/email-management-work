@@ -1,0 +1,36 @@
+# Java compilation and build tools
+*.class
+/build/
+/out/
+/target/
+*.log
+hs_err_pid*
+replay_pid*
+
+# Local IDE metadata
+/.idea/
+*.iml
+/.classpath
+/.project
+/.settings/
+
+# Google OAuth credentials and saved authorization tokens
+credentials.json
+client_secret_*.json
+token.json
+tokens.json
+tokens/
+.tokens/
+
+# Local database configuration and environment secrets
+.env
+.env.*
+!.env.example
+database.properties
+!database.properties.example
+/config/local.properties
+
+# Private email caches and exports; use fictional fixtures in source control
+/data/private/
+/data/mail/
+/exports/
