@@ -1,4 +1,4 @@
-# Maildesk: email management system
+# Maildesk: email management system1
 
 Member 1's Java Swing desktop interface for a Gmail-first email management
 project. Includes Inbox, Sent, Gmail Spam, Suspected messages, search, message
