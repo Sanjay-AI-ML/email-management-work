@@ -26,6 +26,7 @@ public interface EmailService {
 
     /** Fetches Gmail changes, updates the local cache, and runs local spam analysis. */
     void refresh() throws AppException;
+    default void refreshRecent() throws AppException { refresh(); }
 
     /**
      * Returns visible cached messages, newest first, for the selected mailbox.

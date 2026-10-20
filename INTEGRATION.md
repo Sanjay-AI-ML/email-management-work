@@ -55,7 +55,7 @@ production service, rather than independently configured team implementations.
 
 ## Verified scope
 
-On the integrated branch: 59 JUnit tests passed with zero failures/errors/skips,
+On the integrated branch: 62 JUnit tests passed with zero failures/errors/skips,
 including the configured real MySQL server. The contract/interface checks passed
 53 + 29 + 40 assertions. Gmail/OAuth behavior is exercised with local HTTP
 fixtures; no real message is sent by automated verification.
@@ -64,3 +64,12 @@ The local desktop OAuth file is configured and excluded from Git. Google account
 consent and real Gmail delivery are still manual acceptance steps, described in
 `MEMBER2.md`. Attachments, rich-text composition, scheduled synchronization, and
 Google public-app verification remain outside this version's supported scope.
+
+## Small real-Gmail sample
+
+At the user's request, production imports are capped at 18 unique messages: up
+to 6 recent Inbox, 6 Sent, and 6 Spam messages. Both initial connection and
+Refresh use this cap. The bounded sample replaces only the local cache; it
+does not delete mail in Gmail. The low-level gateway retains its paginated API
+implementation for future expansion, but the production service uses the capped
+folder windows. Search and spam review cover the cached sample.

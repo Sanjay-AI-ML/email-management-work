@@ -251,7 +251,14 @@ public final class MailAppPanel extends JPanel {
                     : "Gmail connected. Inbox updated.", result.warning()), false);
             // Sign-in and synchronization are separate: a failed refresh must not erase
             // a valid Google grant or prevent the user from accessing the cached mailbox.
-            load(true);
+            runTask("Loading recent Gmail messages…", () -> {
+                service.refreshRecent();
+                return service.getMessages(Mailbox.INBOX, "");
+            }, messages -> {
+                applyMessages(messages);
+                showNotice(demo ? "Demo mailbox open. No Gmail connection is active."
+                        : "Sample mailbox loaded: up to 18 messages total (6 each from Inbox, Sent and Spam).", false);
+            });
         }));
         refresh.addActionListener(event -> load(true));
         searchButton.addActionListener(event -> load(false));
