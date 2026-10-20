@@ -43,3 +43,6 @@ database.properties
 /data/private/
 /data/mail/
 /exports/
+
+# Local presentation exports and generated slide assets
+/presentation/
