@@ -60,6 +60,24 @@ class GmailEmailServiceTest {
         assertTrue(service.getMessages(Mailbox.SPAM, "").isEmpty());
     }
 
+    @Test void refreshingSampleReplacesOnlyTheLocalSampleSnapshot() throws Exception {
+        service.connectGmail(); service.refresh();
+        gmail.messages.clear();
+        gmail.messages.put("newer", message(0, "newer", Set.of("INBOX")));
+        service.refreshRecent();
+        assertEquals(1, service.getMessages(Mailbox.INBOX, "").size());
+        assertFalse(store.findMessage(service.connectGmail().getAccountId(), "received").isPresent());
+        assertEquals(0, gmail.modifications, "Replacing the local sample must not change Gmail labels");
+    }
+
+    @Test void sampleImportsNeverExceedEighteenMessages() throws Exception {
+        for (int i = 0; i < 30; i++) gmail.messages.put("sample" + i, message(0, "sample" + i, Set.of("INBOX")));
+        service.connectGmail(); service.refresh();
+        assertEquals(18, service.getMessages(Mailbox.INBOX, "").size());
+        service.refreshRecent();
+        assertEquals(18, service.getMessages(Mailbox.INBOX, "").size());
+    }
+
     @Test void databaseFailureAfterDeliveryReturnsSuccessAndWarningWithoutAnotherSend() throws Exception {
         AtomicBoolean failWrites = new AtomicBoolean();
         MailStore unreliable = (MailStore) Proxy.newProxyInstance(MailStore.class.getClassLoader(),

@@ -79,6 +79,32 @@ public final class GmailApiClient implements GmailGateway {
                 throw new AppException("Gmail repeated a mailbox page. Please refresh again.");
             }
         } while (!pageToken.isEmpty());
+        return readMessages(accountId, ids);
+    }
+
+    /** Bounded startup window; never presented as a complete mailbox snapshot. */
+    @Override public List<EmailMessage> fetchRecentMessages(long accountId, int perMailbox) throws AppException {
+        int limit = Math.max(1, Math.min(perMailbox, 100));
+        Set<String> ids = new LinkedHashSet<>();
+        for (String label : List.of("INBOX", "SENT", "SPAM")) {
+            JsonObject page = request("GET", "messages?maxResults=" + limit
+                    + "&includeSpamTrash=true&labelIds=" + label + "&q=" + encode("-in:trash -in:drafts"), null);
+            try {
+                if (page.has("messages")) {
+                    int count = 0;
+                    for (var item : page.getAsJsonArray("messages")) {
+                        if (count++ >= limit) break;
+                        ids.add(requiredString(item.getAsJsonObject(), "id"));
+                    }
+                }
+            } catch (RuntimeException malformedPage) {
+                throw new AppException("Gmail returned an unreadable recent-mail page. Click Refresh to try again.", malformedPage);
+            }
+        }
+        return readMessages(accountId, ids);
+    }
+
+    private List<EmailMessage> readMessages(long accountId, Set<String> ids) throws AppException {
         List<EmailMessage> result = new ArrayList<>();
         for (String id : ids) {
             try {

@@ -129,12 +129,18 @@ Configuration can also come from environment variables. They override the file:
 Search covers cached messages. Refresh requires an internet connection; Gmail
 remains the source of truth. This version supports plain-text composition, not
 attachments, rich-text editing, or scheduled/background synchronization.
-The first refresh imports the mailbox and can take several minutes for large
-accounts. Gmail read requests that hit temporary rate/server limits retry after
-1, 2, 4, 8, 16, and 32 seconds. If the limit persists, Refresh can be retried
-without signing in again. Sending and label changes are not automatically
-replayed after rate/server errors. A failed initial refresh keeps the account
-connected and retains cached messages.
+This project runs as a small real-Gmail sample: every import/refresh reads up to
+6 recent messages each from Inbox, Sent, and Spam, with at most 18 unique messages
+cached by an import. Startup and Refresh use the same cap. Older local cached
+messages outside the current sample are removed from the cache; Gmail messages
+are never deleted by sample refresh. Search covers the current local sample.
+Messages sent interactively can add a Sent copy until the next refresh.
+
+Gmail reads that hit temporary rate/server limits retry after 1, 2, 4, 8, 16, and
+32 seconds. If a limit persists, click Refresh later without signing in again.
+Sending and label changes are not automatically replayed after rate/server errors.
+A failed initial refresh keeps the account connected and retains cached messages.
+
 
 ## Verify
 
@@ -154,7 +160,7 @@ by default. To enable it after configuring local database credentials:
 .\mvnw.cmd '-Dmaildesk.mysqlTest=true' test
 ```
 
-The combined suite passed **59 JUnit tests with zero failures or skips**, plus
+The combined suite passed **62 JUnit tests with zero failures or skips**, plus
 **53 Member 1 contract/demo, 29 Member 2 contract, and 40 Swing assertions**, with that
 MySQL option enabled. The real database test creates a random `.test` account
 and removes its fixture rows afterward; Gmail is simulated and no actual email

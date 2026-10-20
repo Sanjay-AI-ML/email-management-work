@@ -92,6 +92,26 @@ class GmailApiClientTest {
         assertThrows(AppException.class, () -> gateway.fetchMessages(1));
     }
 
+    @Test void startupReadsBoundedRecentWindowsFromAllThreeFolders() throws Exception {
+        java.util.Set<String> folders = new java.util.HashSet<>();
+        AtomicInteger reads = new AtomicInteger();
+        handler.set(exchange -> {
+            if (exchange.getRequestURI().getPath().equals("/messages")) {
+                var query = GmailAuth.parseQuery(exchange.getRequestURI().getRawQuery());
+                assertEquals("6", query.get("maxResults"));
+                assertFalse(query.containsKey("pageToken"));
+                folders.add(query.get("labelIds"));
+                reply(exchange, 200, "{\"messages\":[{\"id\":\"shared\"}],\"nextPageToken\":\"older-mail\"}");
+            } else {
+                reads.incrementAndGet();
+                reply(exchange, 200, rawMessage("Subject: Recent\r\n\r\nBody"));
+            }
+        });
+        assertEquals(1, gateway.fetchRecentMessages(42, 6).size());
+        assertEquals(java.util.Set.of("INBOX", "SENT", "SPAM"), folders);
+        assertEquals(1, reads.get(), "Messages in multiple folders are read once");
+    }
+
     @Test void refreshesOnceOnUnauthorizedResponse() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         handler.set(exchange -> {

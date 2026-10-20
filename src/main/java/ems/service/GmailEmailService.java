@@ -59,7 +59,8 @@ public final class GmailEmailService implements EmailService {
     @Override public synchronized void refresh() throws AppException {
         Account current = connected(); lastWarning = "";
         // A failed network fetch must never be mistaken for an empty mailbox.
-        List<EmailMessage> snapshot = gmail.fetchMessages(current.getAccountId());
+        List<EmailMessage> snapshot = gmail.fetchRecentMessages(current.getAccountId(), 6)
+                .stream().limit(18).toList();
         verifyAccount(current, snapshot);
         try { store.replaceSnapshot(current.getAccountId(), snapshot); }
         catch (SQLException exception) {
@@ -72,6 +73,10 @@ public final class GmailEmailService implements EmailService {
         if (mailbox == null) throw new AppException("Choose a mailbox first.");
         try { return store.getMessages(current.getAccountId(), mailbox, query == null ? "" : query.strip()); }
         catch (SQLException exception) { throw databaseError("Cannot read cached messages. Check MySQL and try again.", exception); }
+    }
+
+    @Override public synchronized void refreshRecent() throws AppException {
+        refresh();
     }
 
     @Override public synchronized EmailMessage openMessage(String gmailMessageId) throws AppException {

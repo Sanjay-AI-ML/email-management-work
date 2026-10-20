@@ -34,7 +34,7 @@ public final class UiChecks {
         EmailService service = (EmailService) Proxy.newProxyInstance(EmailService.class.getClassLoader(),
                 new Class<?>[] {EmailService.class}, (proxy, method, arguments) -> {
                     if (SwingUtilities.isEventDispatchThread()) onEdt.set(true);
-                    if (method.getName().equals("refresh")) {
+                    if (method.getName().equals("refresh") || method.getName().equals("refreshRecent")) {
                         if (failRefresh.get()) throw new AppException("Test connection unavailable. Try again.");
                         CountDownLatch gate = refreshGate.get();
                         if (gate != null && !gate.await(5, TimeUnit.SECONDS)) throw new AppException("Test timed out.");
