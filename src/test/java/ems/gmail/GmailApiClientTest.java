@@ -39,7 +39,7 @@ class GmailApiClientTest {
         });
         server.start();
         gateway = new GmailApiClient(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/"),
-                HttpClient.newHttpClient(), tokens);
+                HttpClient.newHttpClient(), tokens, milliseconds -> { });
     }
 
     @AfterEach void stop() { server.stop(0); }
@@ -190,6 +190,58 @@ class GmailApiClientTest {
         assertFalse(failure.getMessage().contains("secret-token-value"));
     }
 
+    @Test void retriesRateLimitedReadsWithoutRefreshingAuthorization() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        java.util.ArrayList<Long> delays = new java.util.ArrayList<>();
+        gateway = new GmailApiClient(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/"),
+                HttpClient.newHttpClient(), tokens, delays::add);
+        handler.set(exchange -> {
+            if (calls.incrementAndGet() <= 2) reply(exchange, 403,
+                    "{\"error\":{\"errors\":[{\"reason\":\"userRateLimitExceeded\"}]}}");
+            else reply(exchange, 200, "{\"emailAddress\":\"alice@gmail.com\"}");
+        });
+        assertEquals("alice@gmail.com", gateway.connect());
+        assertEquals(List.of(1000L, 2000L), delays);
+        assertEquals(0, tokens.refreshes);
+    }
+
+    @Test void exhaustedQuotaIsNotMisreportedAsMissingGmailSetup() {
+        AtomicInteger calls = new AtomicInteger();
+        handler.set(exchange -> {
+            calls.incrementAndGet();
+            reply(exchange, 403, "{\"error\":{\"errors\":[{\"reason\":\"dailyLimitExceeded\"}],"
+                    + "\"message\":\"private-account-information\"}}");
+        });
+        AppException error = assertThrows(AppException.class, gateway::connect);
+        assertTrue(error.getMessage().contains("quota"));
+        assertFalse(error.getMessage().contains("private-account"));
+        assertEquals(1, calls.get());
+    }
+
+    @Test void rateLimitedSendIsNotAutomaticallyReplayed() {
+        AtomicInteger calls = new AtomicInteger();
+        handler.set(exchange -> {
+            calls.incrementAndGet();
+            reply(exchange, 403, "{\"error\":{\"errors\":[{\"reason\":\"userRateLimitExceeded\"}]}}");
+        });
+        assertThrows(AppException.class, () -> gateway.sendMessage("alice@gmail.com", "bob@example.org", "Hi", "Text"));
+        assertEquals(1, calls.get());
+    }
+
+    @Test void persistentRateLimitStopsAfterBoundedBackoffAndKeepsAuthorization() {
+        java.util.ArrayList<Long> delays = new java.util.ArrayList<>();
+        gateway = new GmailApiClient(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/"),
+                HttpClient.newHttpClient(), tokens, delays::add);
+        handler.set(exchange -> reply(exchange, 403,
+                "{\"error\":{\"errors\":[{\"reason\":\"rateLimitExceeded\"}]}}"));
+        AppException error = assertThrows(AppException.class, gateway::connect);
+        assertEquals(List.of(1000L, 2000L, 4000L, 8000L, 16000L, 32000L), delays);
+        assertTrue(error.getMessage().contains("temporarily limited"));
+        assertFalse(error.getMessage().contains("Enable the Gmail API"));
+        assertFalse(tokens.disconnected);
+        assertEquals(0, tokens.refreshes);
+    }
+
     private static String rawMessage(String content) {
         JsonObject json = new JsonObject();
         json.addProperty("raw", encode(content));
@@ -215,7 +267,7 @@ class GmailApiClientTest {
         boolean disconnected;
         int refreshes;
         @Override public void authorize() { authorized = true; }
-        @Override public String accessToken() { return "initial"; }
+        @Override public String accessToken() { return refreshes == 0 ? "initial" : "refreshed"; }
         @Override public String refreshAccessToken() { refreshes++; return "refreshed"; }
         @Override public void disconnect() { disconnected = true; }
     }

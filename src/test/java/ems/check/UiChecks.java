@@ -52,13 +52,12 @@ public final class UiChecks {
         });
         click("connectButton");
         edt(() -> {
-            check(button("connectButton").isEnabled(), "Connect retry available after refresh failure");
+            check(button("refreshButton").isEnabled(), "Refresh retry available after initial sync failure");
             check(label("statusLabel").getText().contains("Test connection"), "Useful connection failure shown");
         });
-        boolean cleaned = false;
-        try { demo.getMessages(Mailbox.INBOX, ""); } catch (AppException expected) { cleaned = true; }
-        check(cleaned, "Partial connection disconnected after initial refresh failure");
-        failRefresh.set(false); click("connectButton");
+        check(demo.getMessages(Mailbox.INBOX, "").size() == 8,
+                "Initial refresh failure preserves the signed-in account and cached messages");
+        failRefresh.set(false); click("refreshButton");
         edt(() -> {
             check(table().getRowCount() == 8, "Connected Inbox shown");
             check(button("composeButton").isEnabled(), "Compose enabled after connect");

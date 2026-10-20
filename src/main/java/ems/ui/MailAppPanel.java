@@ -242,19 +242,16 @@ public final class MailAppPanel extends JPanel {
     private void wireActions() {
         connect.addActionListener(event -> runTask("Connecting…", () -> {
             Account value = service.connectGmail();
-            try {
-                service.refresh();
-                return new Connected(value, service.getMessages(Mailbox.INBOX, ""), service.getLastWarning());
-            } catch (Exception failure) {
-                try { service.disconnect(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
-                throw failure;
-            }
+            return new Connected(value, service.getMessages(Mailbox.INBOX, ""), service.getLastWarning());
         }, result -> {
             account = result.account(); connected = true; mailbox = Mailbox.INBOX;
             accountLabel.setText(account.getEmailAddress()); accountLabel.setToolTipText("Account: " + account.getEmailAddress());
             cards.show(pages, "mail"); applyMessages(result.messages());
             showNotice(withWarning(demo ? "Demo mailbox open. No Gmail connection is active."
                     : "Gmail connected. Inbox updated.", result.warning()), false);
+            // Sign-in and synchronization are separate: a failed refresh must not erase
+            // a valid Google grant or prevent the user from accessing the cached mailbox.
+            load(true);
         }));
         refresh.addActionListener(event -> load(true));
         searchButton.addActionListener(event -> load(false));
