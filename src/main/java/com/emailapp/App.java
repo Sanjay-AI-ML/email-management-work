@@ -1,23 +1,26 @@
-
 package com.emailapp;
 
-import com.emailapp.database.DatabaseConnection;
-import java.sql.Connection;
-import java.sql.SQLException;
+import ems.service.EmailService;
+import ems.service.GmailEmailService;
+import ems.ui.MainFrame;
+import ems.ui.UiTheme;
 
+import javax.swing.SwingUtilities;
+
+/**
+ * Main production entry point for Maildesk email management application.
+ * Connects GmailEmailService to the Swing desktop interface.
+ */
 public class App {
 
     public static void main(String[] args) {
+        EmailService service = new GmailEmailService();
 
-        try (Connection connection =
-                     DatabaseConnection.getConnection()) {
-
-            System.out.println("Connected to MySQL successfully!");
-            System.out.println("Database: " + connection.getCatalog());
-
-        } catch (SQLException e) {
-            System.out.println("Connection failed!");
-            e.printStackTrace();
-        }
+        SwingUtilities.invokeLater(() -> {
+            UiTheme.install();
+            MainFrame frame = new MainFrame(service);
+            frame.setVisible(true);
+        });
     }
 }
+

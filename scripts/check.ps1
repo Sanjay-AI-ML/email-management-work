@@ -4,6 +4,16 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if (-not (Get-Command javac -CommandType Application -ErrorAction SilentlyContinue)) {
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","User") + ";" + [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + $env:Path
+    if (-not (Get-Command javac -CommandType Application -ErrorAction SilentlyContinue)) {
+        $adoptiumJdk = "$env:LOCALAPPDATA\Programs\Eclipse Adoptium\jdk-17\bin"
+        if (Test-Path $adoptiumJdk) {
+            $env:Path = "$adoptiumJdk;$env:Path"
+        }
+    }
+}
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $classesDirectory = Join-Path $projectRoot 'build/check-classes'
 $sourceDirectories = @(
@@ -33,7 +43,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Java check compilation failed (exit code $LASTEXITCODE)."
 }
 
-foreach ($checkClass in @('ems.check.MemberOneChecks', 'ems.check.UiChecks')) {
+foreach ($checkClass in @('ems.check.MemberOneChecks', 'ems.check.MemberTwoChecks', 'ems.check.UiChecks')) {
     & $javaRuntime.Source '-Djava.awt.headless=true' -cp $classesDirectory $checkClass
     if ($LASTEXITCODE -ne 0) {
         throw "Headless checks failed in $checkClass (exit code $LASTEXITCODE)."
