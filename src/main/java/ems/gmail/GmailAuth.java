@@ -258,12 +258,36 @@ public class GmailAuth {
     private String getClientId() {
         String id = System.getenv("GMAIL_CLIENT_ID");
         if (id == null || id.isBlank()) id = System.getenv("GOOGLE_CLIENT_ID");
-        return (id != null && !id.isBlank()) ? id.trim() : null;
+        if (id != null && !id.isBlank()) return id.trim();
+        return readFromCredentialsFile("client_id");
     }
 
     private String getClientSecret() {
         String secret = System.getenv("GMAIL_CLIENT_SECRET");
         if (secret == null || secret.isBlank()) secret = System.getenv("GOOGLE_CLIENT_SECRET");
-        return (secret != null && !secret.isBlank()) ? secret.trim() : null;
+        if (secret != null && !secret.isBlank()) return secret.trim();
+        return readFromCredentialsFile("client_secret");
+    }
+
+    private String readFromCredentialsFile(String key) {
+        for (String filename : new String[] {"credentials.json", "client_secret.json", "client_secrets.json"}) {
+            Path p = Paths.get(filename);
+            if (Files.exists(p)) {
+                try {
+                    String content = Files.readString(p, StandardCharsets.UTF_8);
+                    Map<String, Object> root = SimpleJson.parseObject(content);
+                    Map<String, Object> installed = SimpleJson.getObject(root, "installed");
+                    if (installed.isEmpty()) {
+                        installed = SimpleJson.getObject(root, "web");
+                    }
+                    String val = SimpleJson.getString(installed, key);
+                    if (val != null && !val.isBlank()) {
+                        return val.trim();
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return null;
     }
 }
