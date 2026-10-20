@@ -18,6 +18,9 @@ replay_pid*
 
 # Google OAuth credentials and saved authorization tokens
 credentials.json
+client_secret.json
+client_secrets.json
+.email_app_tokens.json
 client_secret_*.json
 token.json
 tokens.json

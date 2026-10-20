@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /** OAuth Authorization Code + PKCE using the system browser and a loopback-only callback. */
-public final class OAuthDesktopClient implements AccessTokenProvider {
+public final class GmailAuth implements AccessTokenProvider {
     static final String SCOPE = "https://www.googleapis.com/auth/gmail.modify";
     private static final URI GOOGLE_AUTHORIZE = URI.create("https://accounts.google.com/o/oauth2/v2/auth");
     private static final URI GOOGLE_TOKEN = URI.create("https://oauth2.googleapis.com/token");
@@ -48,13 +48,13 @@ public final class OAuthDesktopClient implements AccessTokenProvider {
     private Instant expiresAt = Instant.EPOCH;
     private boolean ignoreSavedTokens;
 
-    public OAuthDesktopClient(Path credentialsFile, Path tokenDirectory) {
+    public GmailAuth(Path credentialsFile, Path tokenDirectory) {
         this(credentialsFile, tokenDirectory,
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build(),
-                GOOGLE_AUTHORIZE, GOOGLE_TOKEN, OAuthDesktopClient::openBrowser, Duration.ofMinutes(3));
+                GOOGLE_AUTHORIZE, GOOGLE_TOKEN, GmailAuth::openBrowser, Duration.ofMinutes(3));
     }
 
-    OAuthDesktopClient(Path credentialsFile, Path tokenDirectory, HttpClient http,
+    GmailAuth(Path credentialsFile, Path tokenDirectory, HttpClient http,
             URI authorizeEndpoint, URI tokenEndpoint, BrowserOpener browser, Duration timeout) {
         this.credentialsFile = credentialsFile;
         this.store = new TokenStore(tokenDirectory);

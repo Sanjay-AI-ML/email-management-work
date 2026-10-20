@@ -22,20 +22,20 @@ import java.util.List;
 import java.util.Set;
 
 /** Gmail REST client using an OAuth desktop session and standards-compliant MIME messages. */
-public final class GmailRestGateway implements GmailGateway {
+public final class GmailApiClient implements GmailGateway {
     private static final URI GOOGLE_API = URI.create("https://gmail.googleapis.com/gmail/v1/users/me/");
     private static final Gson JSON = new Gson();
     private final URI baseUri;
     private final HttpClient http;
     private final AccessTokenProvider tokens;
 
-    public GmailRestGateway(Path credentialsFile, Path tokenDirectory) {
+    public GmailApiClient(Path credentialsFile, Path tokenDirectory) {
         this(GOOGLE_API, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build(),
-                new OAuthDesktopClient(credentialsFile, tokenDirectory));
+                new GmailAuth(credentialsFile, tokenDirectory));
     }
 
     /** The injected endpoint and token provider support deterministic local HTTP tests. */
-    public GmailRestGateway(URI baseUri, HttpClient http, AccessTokenProvider tokens) {
+    public GmailApiClient(URI baseUri, HttpClient http, AccessTokenProvider tokens) {
         if (!baseUri.toString().endsWith("/")) {
             throw new IllegalArgumentException("Gmail API base URI must end with '/'.");
         }

@@ -5,6 +5,13 @@ Maildesk's production entry point is `ems.App`. The app connects the existing
 persistence, and Member 3's spam detector. Member 1's UI calls services from
 background Swing workers so mailbox activity does not block the event thread.
 
+Member 2's PR #3 is incorporated in this version. Its `GmailAuth` and
+`GmailApiClient` names now identify the single production OAuth/API stack;
+`com.emailapp.App` delegates to `ems.App`. `GmailEmailService.createDefault()`
+centralizes configuration and JDBC wiring. `SimpleJson` retains the team's
+helper API with strict parsing, and `MemberTwoChecks` runs automatically under
+Maven. See [INTEGRATION.md](INTEGRATION.md) for the resolved differences.
+
 ## Local setup
 
 Follow [README.md](README.md) to configure MySQL and download a Google Desktop
@@ -33,8 +40,8 @@ not include a usable Google OAuth client or a pre-authorized Gmail account.
 
 ## Automated verification
 
-The complete suite passed 50 JUnit tests with no failures, errors, or skips,
-plus 53 contract/demo assertions and 40 headless Swing assertions. This run
+The combined suite passed 55 JUnit tests with no failures, errors, or skips,
+plus 53 Member 1 contract/demo, 29 Member 2 contract, and 40 Swing assertions. This run
 included the actual configured MySQL server; the setup check also connected
 and initialized its schema successfully.
 

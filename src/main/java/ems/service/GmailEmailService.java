@@ -1,6 +1,10 @@
 package ems.service;
 
 import ems.exception.AppException;
+import ems.config.AppConfig;
+import ems.gmail.GmailApiClient;
+import ems.storage.JdbcMailStore;
+import java.sql.DriverManager;
 import ems.gmail.GmailGateway;
 import ems.model.*;
 import ems.storage.MailStore;
@@ -16,6 +20,14 @@ public final class GmailEmailService implements EmailService {
     private final MailStore store;
     private Account account;
     private String lastWarning = "";
+
+    /** Shared production wiring for both team launchers; constructors stay injectable for tests. */
+    public static GmailEmailService createDefault() throws AppException {
+        AppConfig config = AppConfig.load();
+        return new GmailEmailService(new GmailApiClient(config.getGmailCredentialsPath(),
+                config.getTokenDirectory()), new JdbcMailStore(() -> DriverManager.getConnection(
+                config.getDatabaseUrl(), config.getDatabaseUser(), config.getDatabasePassword())));
+    }
 
     public GmailEmailService(GmailGateway gmail, MailStore store) {
         this.gmail = Objects.requireNonNull(gmail, "gmail");

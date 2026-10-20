@@ -35,4 +35,17 @@ class AppConfigTest {
         assertFalse(exception.getMessage().contains("BAD!"));
         assertTrue(exception.getMessage().contains("config/app.properties"));
     }
+
+    @Test void teammateCredentialFilenamesWorkWithDeterministicPrecedence() throws Exception {
+        Files.writeString(home.resolve("client_secret.json"), "{}");
+        assertEquals(home.resolve("client_secret.json"),
+                AppConfig.load(home, Map.of()).getGmailCredentialsPath());
+        Files.createDirectories(home.resolve("config"));
+        Files.writeString(home.resolve("config/credentials.json"), "{}");
+        assertEquals(home.resolve("config/credentials.json"),
+                AppConfig.load(home, Map.of()).getGmailCredentialsPath());
+        // A missing explicit path must report that path rather than use another client's grant.
+        assertEquals(home.resolve("missing.json"), AppConfig.load(home,
+                Map.of("GMAIL_CREDENTIALS", "missing.json")).getGmailCredentialsPath());
+    }
 }

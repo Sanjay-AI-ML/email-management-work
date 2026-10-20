@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
 
-class OAuthDesktopClientTest {
+class GmailAuthTest {
     @TempDir Path temp;
     private HttpServer server;
     private URI tokenUri;
@@ -52,7 +52,7 @@ class OAuthDesktopClientTest {
         AtomicReference<Map<String, String>> authorization = new AtomicReference<>();
         AtomicInteger browserCalls = new AtomicInteger();
         tokenHandler.set(exchange -> {
-            Map<String, String> form = OAuthDesktopClient.parseQuery(
+            Map<String, String> form = GmailAuth.parseQuery(
                     new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             assertEquals("authorization_code", form.get("grant_type"));
             assertEquals("auth-code", form.get("code"));
@@ -62,12 +62,12 @@ class OAuthDesktopClientTest {
             assertEquals(authorization.get().get("code_challenge"), challenge);
             reply(exchange, 200, "{\"access_token\":\"initial-access\",\"refresh_token\":\"refresh-value\",\"expires_in\":3600}");
         });
-        OAuthDesktopClient client = client(uri -> {
+        GmailAuth client = client(uri -> {
             browserCalls.incrementAndGet();
-            Map<String, String> query = OAuthDesktopClient.parseQuery(uri.getRawQuery());
+            Map<String, String> query = GmailAuth.parseQuery(uri.getRawQuery());
             authorization.set(query);
             assertEquals("S256", query.get("code_challenge_method"));
-            assertEquals(OAuthDesktopClient.SCOPE, query.get("scope"));
+            assertEquals(GmailAuth.SCOPE, query.get("scope"));
             assertEquals("offline", query.get("access_type"));
             assertTrue(query.get("prompt").contains("select_account"));
             URI callback = URI.create(query.get("redirect_uri"));
@@ -78,12 +78,12 @@ class OAuthDesktopClientTest {
         client.authorize();
         assertEquals("initial-access", client.accessToken());
         assertTrue(Files.exists(tokens.resolve("gmail-token.json")));
-        OAuthDesktopClient restarted = client(uri -> fail("Valid stored token should not reopen browser"));
+        GmailAuth restarted = client(uri -> fail("Valid stored token should not reopen browser"));
         restarted.authorize();
         assertEquals("initial-access", restarted.accessToken());
         assertEquals(1, browserCalls.get());
         tokenHandler.set(exchange -> {
-            Map<String, String> form = OAuthDesktopClient.parseQuery(
+            Map<String, String> form = GmailAuth.parseQuery(
                     new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             assertEquals("refresh_token", form.get("grant_type"));
             assertEquals("refresh-value", form.get("refresh_token"));
@@ -97,8 +97,8 @@ class OAuthDesktopClientTest {
     }
 
     @Test void deniedAuthorizationDoesNotSaveTokens() {
-        OAuthDesktopClient client = client(uri -> {
-            Map<String, String> query = OAuthDesktopClient.parseQuery(uri.getRawQuery());
+        GmailAuth client = client(uri -> {
+            Map<String, String> query = GmailAuth.parseQuery(uri.getRawQuery());
             callback(URI.create(query.get("redirect_uri")), "state=" + query.get("state") + "&error=access_denied");
         });
         AppException failure = assertThrows(AppException.class, client::authorize);
@@ -121,8 +121,8 @@ class OAuthDesktopClientTest {
 
     @Test void timesOutAndClosesLoopbackListener() {
         AtomicReference<URI> callback = new AtomicReference<>();
-        OAuthDesktopClient client = new OAuthDesktopClient(credentials, tokens, http, tokenUri, tokenUri,
-                uri -> callback.set(URI.create(OAuthDesktopClient.parseQuery(uri.getRawQuery()).get("redirect_uri"))),
+        GmailAuth client = new GmailAuth(credentials, tokens, http, tokenUri, tokenUri,
+                uri -> callback.set(URI.create(GmailAuth.parseQuery(uri.getRawQuery()).get("redirect_uri"))),
                 Duration.ofMillis(100));
         AppException failure = assertThrows(AppException.class, client::authorize);
         assertTrue(failure.getMessage().contains("timed out"));
@@ -135,9 +135,9 @@ class OAuthDesktopClientTest {
         Files.writeString(tokens.resolve("gmail-token.json"), "{\"client_id\":\"desktop-test-client\","
                 + "\"access_token\":\"old\",\"refresh_token\":\"revoked\",\"expires_at\":0}");
         tokenHandler.set(exchange -> reply(exchange, 400, "{\"error\":\"invalid_grant\",\"private\":\"secret-value\"}"));
-        OAuthDesktopClient client = client(uri -> {
+        GmailAuth client = client(uri -> {
             assertFalse(Files.exists(tokens.resolve("gmail-token.json")));
-            Map<String, String> query = OAuthDesktopClient.parseQuery(uri.getRawQuery());
+            Map<String, String> query = GmailAuth.parseQuery(uri.getRawQuery());
             callback(URI.create(query.get("redirect_uri")), "state=" + query.get("state") + "&error=access_denied");
         });
         AppException failure = assertThrows(AppException.class, client::authorize);
@@ -145,8 +145,8 @@ class OAuthDesktopClientTest {
         assertFalse(Files.exists(tokens.resolve("gmail-token.json")));
     }
 
-    private OAuthDesktopClient client(OAuthDesktopClient.BrowserOpener browser) {
-        return new OAuthDesktopClient(credentials, tokens, http, tokenUri, tokenUri, browser, Duration.ofSeconds(3));
+    private GmailAuth client(GmailAuth.BrowserOpener browser) {
+        return new GmailAuth(credentials, tokens, http, tokenUri, tokenUri, browser, Duration.ofSeconds(3));
     }
 
     private HttpResponse<String> callback(URI uri, String query) throws Exception {

@@ -15,6 +15,27 @@ buttons apply the user's explicit correction to Gmail and save it locally.
 
 The checked-in Maven Wrapper downloads the pinned Maven version and dependencies;
 installing Maven separately is unnecessary. Application code compiles for Java 17.
+The PowerShell launchers share Member 2's JDK discovery, including the local
+Adoptium JDK 17 installation path.
+
+## Combined team implementation
+
+This branch incorporates Member 2's merged Gmail service (PR #3), Member 1's
+Swing interface, and Member 3's spam/database work into one production stack:
+
+```text
+ems.App / com.emailapp.App
+  -> GmailEmailService.createDefault()
+     -> GmailApiClient -> GmailAuth -> Google OAuth + Gmail REST API
+     -> JdbcMailStore -> MySQL + SpamClassifier
+```
+
+`GmailApiClient` implements `GmailGateway`; `GmailAuth` implements
+`AccessTokenProvider`. The shared `EmailService` and `ems.model` contracts remain
+the UI boundary. Both launchers use the same local configuration, database,
+PKCE/state-validated browser sign-in, paginated mailbox retrieval, MIME handling,
+and protected token store. See [INTEGRATION.md](INTEGRATION.md) for the merge
+decisions and migration from the earlier Member 2 instructions.
 
 ## Configure once
 
@@ -53,6 +74,13 @@ Then set `db.user=maildesk` and the corresponding password locally.
 5. Under **Clients**, create an OAuth client with application type **Desktop app**.
 6. Download its JSON and save it locally as `config/credentials.json`.
 
+Member 2's `client_secret.json` and `client_secrets.json` filenames in the project
+root are also recognized, along with `credentials.json` and
+`config/client_secret.json`. `config/credentials.json` takes precedence when no
+explicit path is configured. `GMAIL_CREDENTIALS` or `gmail.credentials` selects
+one file explicitly; a missing explicit file produces an error instead of
+silently selecting a different OAuth client.
+
 The app opens your browser for Google consent and receives the result on a local
 loopback address. Maildesk never asks for your Gmail password. Google documents
 the [desktop authorization flow](https://developers.google.com/identity/protocols/oauth2/native-app)
@@ -82,6 +110,9 @@ The distributable jar is `target/maildesk.jar`; launch from the project director
 java -jar target/maildesk.jar
 ```
 
+Member 2's entry point is supported using the same packaged dependencies:
+`java -cp target/maildesk.jar com.emailapp.App`.
+
 MySQL and the OAuth client are still required when running the jar. The jar
 contains the JDBC driver and other libraries, but never local passwords/tokens.
 
@@ -105,6 +136,8 @@ attachments, rich-text editing, or scheduled/background synchronization.
 .\scripts\check.ps1
 # Also save interface preview images under build/previews:
 .\scripts\check.ps1 -Render
+# Include the configured local MySQL server:
+.\scripts\check.ps1 -MySql
 ```
 
 The regular checks run headlessly against fictional fixtures, a local fake HTTP
@@ -115,8 +148,8 @@ by default. To enable it after configuring local database credentials:
 .\mvnw.cmd '-Dmaildesk.mysqlTest=true' test
 ```
 
-The complete suite passed **50 JUnit tests with zero failures or skips**, plus
-**53 contract/demo assertions and 40 Swing interaction assertions**, with that
+The combined suite passed **55 JUnit tests with zero failures or skips**, plus
+**53 Member 1 contract/demo, 29 Member 2 contract, and 40 Swing assertions**, with that
 MySQL option enabled. The real database test creates a random `.test` account
 and removes its fixture rows afterward; Gmail is simulated and no actual email
 is sent. Setup checking also confirmed the configured MySQL connection and
@@ -125,6 +158,8 @@ schema are ready.
 Live Gmail authorization and delivery still require your Google Desktop OAuth
 JSON and browser consent. See [MEMBER2.md](MEMBER2.md) for the real-account
 acceptance checklist; these automated checks do not establish live Gmail access.
+GitHub Actions builds and tests pull requests on both Windows and Linux with
+JDK 17; those jobs use simulated Gmail and H2, and skip the opt-in local MySQL test.
 
 The standalone demo is still available without Google or MySQL setup:
 
@@ -138,6 +173,7 @@ It uses fictional messages in memory and clearly labels simulated sends.
 
 - `src/main/java/ems/ui`: Member 1's Swing interface.
 - `src/main/java/ems/gmail` and `ems/service`: Gmail access and orchestration.
+- `src/main/java/com/emailapp/App.java`: Member 2's compatible production launcher.
 - `src/main/java/ems/storage`: account-scoped JDBC persistence.
 - `src/main/java/com/emailapp`: reviewed Member 3 components and compatibility code.
 - `sql/schema.sql`: MySQL table definitions, also bundled as a jar resource.
@@ -145,3 +181,4 @@ It uses fictional messages in memory and clearly labels simulated sends.
 - `src/test/java`: service, API, database, spam, and interface checks.
 
 See [MEMBER3_REVIEW.md](MEMBER3_REVIEW.md) for integration findings and fixes.
+Project slides and their source images are available in [presentation](presentation/README.md).

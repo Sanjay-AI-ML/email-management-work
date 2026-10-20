@@ -25,9 +25,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
-class GmailRestGatewayTest {
+class GmailApiClientTest {
     private HttpServer server;
-    private GmailRestGateway gateway;
+    private GmailApiClient gateway;
     private final FakeTokens tokens = new FakeTokens();
     private final AtomicReference<Handler> handler = new AtomicReference<>();
 
@@ -38,7 +38,7 @@ class GmailRestGatewayTest {
             catch (Throwable failure) { reply(exchange, 500, "{}"); }
         });
         server.start();
-        gateway = new GmailRestGateway(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/"),
+        gateway = new GmailApiClient(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/"),
                 HttpClient.newHttpClient(), tokens);
     }
 
@@ -61,7 +61,7 @@ class GmailRestGatewayTest {
         handler.set(exchange -> {
             String path = exchange.getRequestURI().getPath();
             if (path.equals("/messages")) {
-                var query = OAuthDesktopClient.parseQuery(exchange.getRequestURI().getRawQuery());
+                var query = GmailAuth.parseQuery(exchange.getRequestURI().getRawQuery());
                 assertEquals("true", query.get("includeSpamTrash"));
                 assertEquals("-in:trash -in:drafts", query.get("q"));
                 reply(exchange, 200, query.containsKey("pageToken")

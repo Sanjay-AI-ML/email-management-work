@@ -2,7 +2,6 @@ package ems;
 
 import ems.config.AppConfig;
 import ems.exception.AppException;
-import ems.gmail.GmailRestGateway;
 import ems.service.GmailEmailService;
 import ems.storage.JdbcMailStore;
 import ems.ui.MainFrame;
@@ -45,8 +44,7 @@ public final class App {
                 if (!credentials || !database) System.exit(1);
                 return;
             }
-            GmailEmailService service = new GmailEmailService(new GmailRestGateway(
-                    config.getGmailCredentialsPath(), config.getTokenDirectory()), store);
+            GmailEmailService service = GmailEmailService.createDefault();
             SwingUtilities.invokeLater(() -> {
                 UiTheme.install();
                 new MainFrame(service).setVisible(true);

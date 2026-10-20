@@ -7,6 +7,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'initialize-java.ps1')
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if (-not $NoBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -SkipTests }
 $applicationJar = Join-Path $projectRoot 'target/maildesk.jar'

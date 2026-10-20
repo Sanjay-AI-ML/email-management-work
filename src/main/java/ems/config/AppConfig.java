@@ -55,7 +55,16 @@ public final class AppConfig {
     public String getDatabaseUser() { return value("DB_USER", "db.user", "root").strip(); }
     public String getDatabasePassword() { return value("DB_PASSWORD", "db.password", ""); }
     public Path getGmailCredentialsPath() {
-        return localPath(value("GMAIL_CREDENTIALS", "gmail.credentials", "config/credentials.json"));
+        if (environment.containsKey("GMAIL_CREDENTIALS") || properties.containsKey("gmail.credentials")) {
+            return localPath(value("GMAIL_CREDENTIALS", "gmail.credentials", "config/credentials.json"));
+        }
+        // Accept the filenames documented by Member 2, with the local config taking precedence.
+        for (String candidate : new String[] {"config/credentials.json", "config/client_secret.json",
+                "credentials.json", "client_secret.json", "client_secrets.json"}) {
+            Path path = home.resolve(candidate);
+            if (Files.isRegularFile(path)) return path;
+        }
+        return home.resolve("config/credentials.json");
     }
     public Path getTokenDirectory() {
         return localPath(value("GMAIL_TOKEN_DIR", "gmail.tokenDir", "config/tokens"));
