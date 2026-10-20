@@ -57,6 +57,19 @@ To explore the interface without external services:
 .\scripts\run-demo.ps1
 ```
 
+## Windows executable
+
+Create a portable Windows application with a bundled Java runtime:
+
+```powershell
+.\scripts\package-windows.ps1 -JdkPath 'C:\path\to\temurin-jdk-17'
+```
+
+The output is `package/Maildesk/Maildesk.exe` and the shareable
+`package/Maildesk-Windows-x64.zip`. Extract the entire ZIP before running the
+executable. MySQL and local Gmail configuration are still required; a separate
+Java installation is unnecessary. See [Windows packaging](docs/WINDOWS.md).
+
 ## Verification
 
 ```powershell
