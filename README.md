@@ -8,8 +8,6 @@ explainable spam review. Built with Swing, JDBC, and the Gmail REST API.
 [Download for Windows](https://github.com/Sanjay-AI-ML/email-management-work/releases/latest/download/Maildesk-Windows-x64.zip)
 · [Project report (DOCX)](docs/report/Maildesk_Project_Report.docx)
 · [PDF preview](docs/report/Maildesk_Project_Report.pdf)
-· [Appendix A: complete source code (DOCX)](docs/report/Maildesk_Appendix_A_Source_Code.docx)
-· [Appendix A: source code PDF](docs/report/Maildesk_Appendix_A_Source_Code.pdf)
 · [Setup guide](docs/SETUP.md)
 
 ![Maildesk inbox using fictional demo messages](docs/images/inbox.png)
