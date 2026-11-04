@@ -47,3 +47,7 @@ database.properties
 
 # Local presentation exports and generated slide assets
 /presentation/
+
+# Local document-rendering previews
+/report/
+/docs/report/preview-*.jpg
